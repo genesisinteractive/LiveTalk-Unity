@@ -434,6 +434,12 @@ clip is already on disk. TTS requests are serialised through one voice queue and
 MuseTalk requests through another, so concurrent `SpeakAsync` calls are safe
 and simply take turns.
 
+To roll a new take of the same voice and text without turning the whole cache
+off, pass `useCache: false`. That call skips the cache **read**, synthesises,
+and still **writes** the new wav (and frames, when animated) so the next
+default `SpeakAsync` hits the new take. `LiveTalkAPI.SetCacheEnabled(false)`
+is a global switch, not a per-utterance skip.
+
 ## DialogueOrchestrator
 
 Turn-based multi-character dialogue over several `CharacterPlayer`s: it
@@ -582,7 +588,9 @@ and `DialogueOrchestrator` — read and write two kinds of entry under
 Because the key is the voice, not the character, two characters sharing a voice
 share the audio, a replaced voice never replays old takes, and the same line at
 two expressions never shares frames. A frames folder left short by a failed run
-is deleted rather than taken as a hit next time.
+is deleted rather than taken as a hit next time. `SpeakAsync(..., useCache:
+false)` and `QueueSpeech(..., useCache: false)` skip the read for that call
+only and overwrite the matching entries with the new take.
 
 Avatars, voices and characters are **not** cache and live under the save
 location; the avatar folder is its own cache (asking for the same portrait

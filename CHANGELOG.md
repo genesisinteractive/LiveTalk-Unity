@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   folders are not a hit.
 
 ### Added
+- **`Character.SpeakAsync(..., useCache:)`** (default true) and
+  **`CharacterPlayer.QueueSpeech(..., useCache:)`**. False skips the
+  cache *read* for that call so the same voice + text synthesises a new
+  take; the new wav (and chat frames, when animated) still overwrite
+  the cache so the next default call hits it. Independent of
+  `LiveTalkAPI.SetCacheEnabled`, which is a global on/off.
 - **`LiveTalkAPI.IsPerformanceRendered`** — whether a performance's
   cache folder is already complete, so a host can preview audio on the
   first bake and skip that pass on replay.
