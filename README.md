@@ -523,9 +523,14 @@ What rendering does, once per fingerprint (cues + characters + voices):
    rendered from the avatar's recorded poses (`motion.bin`, avatar v2) into a
    pose cache, once ever per avatar + pose.
 3. **Lip-sync** per spoken utterance over the base frames its ticks have.
+   Mouths are cached on `hash(voice, text, avatar, planSlice)` — the
+   sequence of base faces under the line, not the performance clock.
+   Nudging a cue that does not change that sequence reuses the mouths;
+   a re-timed expression track under the line misses and re-inpaints.
+   Chat lip-sync (`CharacterPlayer`) still keys on expression index.
 4. A **manifest** (`perf_<fingerprint>/performance.json` under the cache) with a
    frame path per tick per character, the wavs, and captions. Frames are
-   referenced, not copied; only lip-synced composites are new files.
+   referenced, not copied (avatar PNGs, pose cache, mouth cache).
 
 `PerformancePlayer` streams frames from disk `Lookahead` ticks ahead of the play
 head, plays each utterance's wav on a per-character `AudioSource` child, and
@@ -569,9 +574,10 @@ and `DialogueOrchestrator` — read and write two kinds of entry under
 | Entry | Key | On disk |
 |---|---|---|
 | Speech audio | `hash(voiceId, text)` | `<key>.wav` |
-| Lip-sync frames | `hash(voiceId, text, avatarId, expressionIndex)` | `<key>_frames/frame_000000.png …` |
+| Lip-sync frames (chat) | `hash(voiceId, text, avatarId, expressionIndex)` | `<key>_frames/frame_000000.png …` |
+| Lip-sync frames (performances) | `hash(voiceId, text, avatarId, planSlice, wavBytes)` | `<key>_frames/frame_000000.png …` |
 | Rendered pose (performances) | `hash(avatarId, pose)` | `pose_<key>.png` |
-| Rendered performance | performance fingerprint | `perf_<key>/performance.json` + `frames_<character>/` |
+| Rendered performance | performance fingerprint | `perf_<key>/performance.json` |
 
 Because the key is the voice, not the character, two characters sharing a voice
 share the audio, a replaced voice never replays old takes, and the same line at

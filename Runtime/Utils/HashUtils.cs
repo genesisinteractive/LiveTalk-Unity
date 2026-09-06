@@ -345,6 +345,34 @@ namespace LiveTalk.Utils
         }
 
         /// <summary>
+        /// Cache key for one performance lip-sync slice:
+        /// <c>hash(voiceId, text, avatarId, planSliceHash, wavBytes)</c>.
+        /// Same words over the same sequence of base faces (and the same
+        /// wav) reuse the mouths; the same words over a re-timed expression
+        /// track miss. Distinct from <see cref="GenerateFramesCacheKey"/>
+        /// (chat utterances keyed on a single expression index).
+        /// </summary>
+        public static string GeneratePerformanceMouthKey(
+            string voiceId, string text, string avatarId, string planSliceHash, long wavBytes)
+        {
+            if (string.IsNullOrEmpty(voiceId) || string.IsNullOrEmpty(text)
+                || string.IsNullOrEmpty(avatarId) || string.IsNullOrEmpty(planSliceHash))
+                return null;
+
+            ulong combined = FNV_OFFSET_BASIS_64;
+            combined = HashString(combined, GenerateTextHash(text));
+            combined = HashString(combined, voiceId);
+            combined = HashString(combined, avatarId);
+            combined = HashString(combined, planSliceHash);
+            combined = HashString(combined, wavBytes.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            combined = HashString(combined, "perf_mouth_v1");
+
+            string mainHash = combined.ToString("x16");
+            uint collisionResistance = (uint)(combined >> 32) ^ (uint)combined;
+            return mainHash + collisionResistance.ToString("x8");
+        }
+
+        /// <summary>
         /// Mixes multiple hash strings into a single deterministic hash.
         /// Uses FNV-1a algorithm for consistent results.
         /// </summary>

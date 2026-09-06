@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Performance lip-sync is cached per utterance slice**, not per
+  `perf_*` folder. Mouths key on voice + text + avatar + the hash of
+  the base-face sequence under the line (stored expression/frame or
+  pose-cache key, in order) and the wav byte length. A new fingerprint
+  that only moves cues still on the same faces reuses those mouths;
+  MuseTalk runs only for slices whose plan actually changed. Chat
+  (`CharacterPlayer`) still keys on expression index. Incomplete
+  folders are not a hit.
+
 ### Added
 - **`LiveTalkAPI.IsPerformanceRendered`** — whether a performance's
   cache folder is already complete, so a host can preview audio on the

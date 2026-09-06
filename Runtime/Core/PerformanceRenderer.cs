@@ -21,12 +21,15 @@ namespace LiveTalk.Core
     /// Frames are never duplicated. A tick on a stored driving frame points
     /// at the avatar's own PNG; a blend / hold tick points at the pose cache
     /// (<c>pose_&lt;key&gt;.png</c>, rendered once ever per avatar + pose); a
-    /// lip-synced tick is the only new file, under the performance folder.
+    /// lip-synced tick points at the mouth cache
+    /// (<c>hash(voice, text, avatar, planSlice)/_frames</c>), also once ever
+    /// for that slice. A new performance fingerprint that does not change a
+    /// line's base faces reuses those mouths.
     ///
     /// Order: audio for every utterance (cached by voice + text) → resolve →
-    /// render missing poses → MuseTalk over each lip-synced utterance's slice
-    /// of the plan → manifest. The manifest's presence marks the folder
-    /// complete; a later render with the same fingerprint returns it.
+    /// render missing poses → MuseTalk only for lip-synced slices whose
+    /// mouth cache misses → manifest. The manifest's presence marks the
+    /// folder complete; a later render with the same fingerprint returns it.
     /// </summary>
     internal static class PerformanceRenderer
     {
@@ -182,50 +185,34 @@ namespace LiveTalk.Core
                     }
 
                     // Lip-sync: one MuseTalk pass per utterance of this
-                    // character over the plan slice it covers.
+                    // character over the plan slice it covers, unless that
+                    // slice is already in the mouth cache.
                     string composedFolder = System.IO.Path.Combine(folder, "frames_" + SafeName(character.Id));
                     Directory.CreateDirectory(composedFolder);
                     var mine = resolved.Utterances.Where(t => t.Cue.Character == character && t.Cue.LipSync).ToList();
+                    int mouthHits = 0, mouthMiss = 0;
                     for (int m = 0; m < mine.Count; m++)
                     {
                         var tu = mine[m];
-                        onProgress?.Invoke($"Lip-sync {m + 1}/{mine.Count}: {tu.Cue.Text}", 0.5f + 0.45f * m / Mathf.Max(1, mine.Count));
                         int k0 = Mathf.Clamp(tu.StartTick, 0, plan.Length - 1);
                         int count = Mathf.Min(Mathf.FloorToInt(tu.Duration * Performance.Fps), plan.Length - k0);
                         if (count <= 0) continue;
 
-                        AvatarData slice = null;
-                        yield return BuildSliceAsync(api, avatar, plan, frames, k0, count, d => slice = d);
+                        string mouthKey = MouthCacheKey(tu, avatar, plan, k0, count);
+                        if (TryApplyMouthCache(mouthKey, count, frames, k0))
+                        {
+                            mouthHits++;
+                            onProgress?.Invoke($"Lip-sync {m + 1}/{mine.Count} (cached): {tu.Cue.Text}",
+                                0.5f + 0.45f * m / Mathf.Max(1, mine.Count));
+                            continue;
+                        }
 
-                        yield return TaskYield.Wait(api.MuseTalkQueue.AcquireAsync(), "Performance.MuseTalkQueue.Acquire");
-                        try
-                        {
-                            var stream = api.GenerateTalkingHeadWithPreloadedData(slice, tu.Clip, 0);
-                            int i = 0;
-                            while (stream.HasMoreFrames)
-                            {
-                                var awaiter = stream.WaitForNext();
-                                yield return awaiter;
-                                var tex = awaiter.Texture;
-                                if (tex == null) continue;
-                                if (i < count)
-                                {
-                                    string png = System.IO.Path.Combine(composedFolder, $"{k0 + i:D6}.png");
-                                    File.WriteAllBytes(png, tex.EncodeToPNG());
-                                    frames[k0 + i] = png;
-                                }
-                                Release(tex);
-                                i++;
-                            }
-                            if (stream.Error != null) throw stream.Error;
-                            if (i < count)
-                                Logger.LogWarning($"[Performance] {tu.Cue}: lip-sync produced {i} frames for {count} ticks; the tail keeps the base face.");
-                        }
-                        finally
-                        {
-                            api.MuseTalkQueue.Release();
-                        }
+                        mouthMiss++;
+                        onProgress?.Invoke($"Lip-sync {m + 1}/{mine.Count}: {tu.Cue.Text}",
+                            0.5f + 0.45f * m / Mathf.Max(1, mine.Count));
+                        yield return RenderMouthSliceAsync(api, avatar, plan, frames, tu, k0, count, mouthKey, composedFolder);
                     }
+                    Logger.Log($"[Performance] {character.Name}: lip-sync {mouthHits} cache hit, {mouthMiss} rendered.");
 
                     manifest.characters.Add(new ManifestCharacter
                     {
@@ -249,6 +236,101 @@ namespace LiveTalk.Core
                 if (!committed)
                     LiveTalkStorage.DeleteFolder(folder);
             }
+        }
+
+        static string MouthCacheKey(TimedUtterance tu, Avatar avatar, PoseStep[] plan, int k0, int count)
+        {
+            if (tu?.Cue?.Character?.Voice == null || avatar == null) return null;
+            string slice = PlanSliceHash(avatar.Id, plan, k0, count);
+            long wavBytes = 0;
+            if (!string.IsNullOrEmpty(tu.CachedWavPath) && File.Exists(tu.CachedWavPath))
+                wavBytes = new FileInfo(tu.CachedWavPath).Length;
+            return HashUtils.GeneratePerformanceMouthKey(
+                tu.Cue.Character.Voice.Id, tu.Cue.Text, avatar.Id, slice, wavBytes);
+        }
+
+        /// <summary>
+        /// Identity of the base-face sequence MuseTalk will inpaint. Stored
+        /// ticks are expression+frame; rendered ticks are the pose-cache key.
+        /// Clock position is not part of it — only which faces, in order.
+        /// </summary>
+        static string PlanSliceHash(string avatarId, PoseStep[] plan, int k0, int count)
+        {
+            var sb = new System.Text.StringBuilder(64 + count * 12);
+            sb.Append("slice_v1;").Append(count).Append(';');
+            for (int i = 0; i < count; i++)
+            {
+                var step = plan[k0 + i];
+                if (step.IsStored)
+                    sb.Append('S').Append(step.Expression).Append(':').Append(step.Frame).Append(';');
+                else
+                    sb.Append('R').Append(PerformanceResolver.PoseKey(avatarId, step.Pose)).Append(';');
+            }
+            return HashUtils.GenerateTextHash(sb.ToString());
+        }
+
+        static bool TryApplyMouthCache(string mouthKey, int count, string[] frames, int k0)
+        {
+            if (string.IsNullOrEmpty(mouthKey) || count <= 0) return false;
+            for (int i = 0; i < count; i++)
+            {
+                string png = LiveTalkCache.GetFramePath(mouthKey, i);
+                if (string.IsNullOrEmpty(png) || !File.Exists(png)) return false;
+            }
+            for (int i = 0; i < count; i++)
+                frames[k0 + i] = LiveTalkCache.GetFramePath(mouthKey, i);
+            return true;
+        }
+
+        static IEnumerator RenderMouthSliceAsync(
+            LiveTalkAPI api, Avatar avatar, PoseStep[] plan, string[] frames,
+            TimedUtterance tu, int k0, int count, string mouthKey, string composedFolder)
+        {
+            if (!string.IsNullOrEmpty(mouthKey))
+                LiveTalkCache.CreateFramesCacheFolder(mouthKey);
+
+            AvatarData slice = null;
+            yield return BuildSliceAsync(api, avatar, plan, frames, k0, count, d => slice = d);
+
+            yield return TaskYield.Wait(api.MuseTalkQueue.AcquireAsync(), "Performance.MuseTalkQueue.Acquire");
+            bool ok = false;
+            try
+            {
+                var stream = api.GenerateTalkingHeadWithPreloadedData(slice, tu.Clip, 0);
+                int i = 0;
+                while (stream.HasMoreFrames)
+                {
+                    var awaiter = stream.WaitForNext();
+                    yield return awaiter;
+                    var tex = awaiter.Texture;
+                    if (tex == null) continue;
+                    if (i < count)
+                    {
+                        string png = MouthWritePath(mouthKey, i, composedFolder, k0);
+                        File.WriteAllBytes(png, tex.EncodeToPNG());
+                        frames[k0 + i] = png;
+                    }
+                    Release(tex);
+                    i++;
+                }
+                if (stream.Error != null) throw stream.Error;
+                if (i < count)
+                    Logger.LogWarning($"[Performance] {tu.Cue}: lip-sync produced {i} frames for {count} ticks; the tail keeps the base face.");
+                ok = true;
+            }
+            finally
+            {
+                api.MuseTalkQueue.Release();
+                if (!ok && !string.IsNullOrEmpty(mouthKey))
+                    LiveTalkCache.DeleteFramesCache(mouthKey);
+            }
+        }
+
+        static string MouthWritePath(string mouthKey, int i, string composedFolder, int k0)
+        {
+            string cached = LiveTalkCache.GetFramePath(mouthKey, i);
+            if (!string.IsNullOrEmpty(cached)) return cached;
+            return System.IO.Path.Combine(composedFolder, $"{k0 + i:D6}.png");
         }
 
         /// <summary>
