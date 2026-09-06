@@ -506,6 +506,13 @@ yield return api.RenderPerformanceAsync(perf,
 ```
 
 What rendering does, once per fingerprint (cues + characters + voices):
+audio is synthesised (or loaded from the speech cache) **without playing
+it** — `SpeakAsync` with `expressionIndex: -1` only produces a clip.
+`IsPerformanceRendered` is true once the folder exists, so a host can
+preview those clips itself on the first bake. `CreatePerformancePlayer`
+is what actually plays wavs and frames.
+
+What rendering does, once per fingerprint (cues + characters + voices):
 
 1. **Audio** for every utterance (the normal speech cache, voice + text).
 2. **Resolve**: anchors become seconds; the expression track becomes a *pose

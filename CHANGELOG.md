@@ -8,7 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **Performances: an expression track and a speech track on one 25 fps clock.**
+- **`LiveTalkAPI.IsPerformanceRendered`** — whether a performance's
+  cache folder is already complete, so a host can preview audio on the
+  first bake and skip that pass on replay.
   `Performance` holds `ExpressionCue`s (an expression the face performs:
   play the clip through, or play to its peak and hold it with the idle
   clip's own micro-motion, eyes at 1.0 so blinks stay real) and

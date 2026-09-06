@@ -104,6 +104,7 @@ namespace LiveTalk.API
                     var src = go.AddComponent<AudioSource>();
                     src.playOnAwake = false;
                     src.spatialBlend = 0f;
+                    src.volume = 1f;
                     _sources[u.CharacterId] = src;
                 }
             }

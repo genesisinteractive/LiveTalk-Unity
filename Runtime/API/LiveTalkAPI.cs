@@ -896,6 +896,20 @@ namespace LiveTalk.API
         }
 
         /// <summary>
+        /// True when <see cref="RenderPerformanceAsync"/> has already written a
+        /// complete folder for this performance (same cues, characters, voices).
+        /// A host can skip a bake-preview and go straight to
+        /// <see cref="CreatePerformancePlayer"/>.
+        /// </summary>
+        public bool IsPerformanceRendered(Performance performance)
+        {
+            if (performance == null) throw new ArgumentNullException(nameof(performance));
+            if (!LiveTalkCache.IsInitialized) return false;
+            string folder = PerformanceRenderer.FolderFor(performance.Fingerprint());
+            return File.Exists(Path.Combine(folder, PerformanceRenderer.ManifestFileName));
+        }
+
+        /// <summary>
         /// A player for a rendered performance. The host owns the GameObject
         /// (<c>Destroy</c> it when done); it is parented like
         /// <see cref="CharacterPlayer"/>s.
