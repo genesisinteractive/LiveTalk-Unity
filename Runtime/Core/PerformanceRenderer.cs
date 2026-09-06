@@ -242,11 +242,10 @@ namespace LiveTalk.Core
         {
             if (tu?.Cue?.Character?.Voice == null || avatar == null) return null;
             string slice = PlanSliceHash(avatar.Id, plan, k0, count);
-            long wavBytes = 0;
-            if (!string.IsNullOrEmpty(tu.CachedWavPath) && File.Exists(tu.CachedWavPath))
-                wavBytes = new FileInfo(tu.CachedWavPath).Length;
+            string audioHash = HashUtils.GenerateAudioContentHash(tu.CachedWavPath)
+                ?? AudioFileIO.ContentHash(tu.Clip);
             return HashUtils.GeneratePerformanceMouthKey(
-                tu.Cue.Character.Voice.Id, tu.Cue.Text, avatar.Id, slice, wavBytes);
+                tu.Cue.Character.Voice.Id, tu.Cue.Text, avatar.Id, slice, audioHash);
         }
 
         /// <summary>

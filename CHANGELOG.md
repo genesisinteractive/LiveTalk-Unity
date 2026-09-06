@@ -8,21 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Chat and performance lip-sync frames key on the wav content hash**,
+  not only voice + text + face (`frames_cache_v3`, `perf_mouth_v2`).
+  A re-rolled take of the same line misses automatically; the host does
+  not delete folders. Voice-only (`expressionIndex: -1`) still does not
+  run MuseTalk. File length is not enough: two takes of the same
+  duration were a false hit. v2 / `perf_mouth_v1` folders are simply
+  never matched; clear the cache to reclaim the space.
 - **Performance lip-sync is cached per utterance slice**, not per
   `perf_*` folder. Mouths key on voice + text + avatar + the hash of
   the base-face sequence under the line (stored expression/frame or
-  pose-cache key, in order) and the wav byte length. A new fingerprint
+  pose-cache key, in order) and the wav content hash. A new fingerprint
   that only moves cues still on the same faces reuses those mouths;
   MuseTalk runs only for slices whose plan actually changed. Chat
-  (`CharacterPlayer`) still keys on expression index. Incomplete
-  folders are not a hit.
+  (`CharacterPlayer`) keys on expression index plus the same wav hash.
+  Incomplete folders are not a hit.
 
 ### Added
 - **`Character.SpeakAsync(..., useCache:)`** (default true) and
   **`CharacterPlayer.QueueSpeech(..., useCache:)`**. False skips the
-  cache *read* for that call so the same voice + text synthesises a new
-  take; the new wav (and chat frames, when animated) still overwrite
-  the cache so the next default call hits it. Independent of
+  audio cache *read* for that call so the same voice + text synthesises
+  a new take, then overwrites that wav. Frames for that take miss on
+  the next animated speak because they hash the wav. `expressionIndex:
+  -1` never runs MuseTalk. Independent of
   `LiveTalkAPI.SetCacheEnabled`, which is a global on/off.
 - **`LiveTalkAPI.IsPerformanceRendered`** — whether a performance's
   cache folder is already complete, so a host can preview audio on the

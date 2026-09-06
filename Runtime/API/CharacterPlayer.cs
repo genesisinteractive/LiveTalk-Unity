@@ -420,8 +420,10 @@ namespace LiveTalk.API
         /// <param name="withAnimation">If false, plays audio only (useful for characters without avatars)</param>
         /// <param name="useCache">
         /// Forwarded to <see cref="Character.SpeakAsync"/>. False synthesises a
-        /// new take of the same text and overwrites the cache; true (default)
-        /// serves a matching wav when one exists.
+        /// new take of the same text and overwrites the audio cache; true
+        /// (default) serves a matching wav when one exists. Lip-sync frames
+        /// key on that wav's content hash, so a later animated speak of the
+        /// new take misses the old mouths.
         /// </param>
         public void QueueSpeech(string text, int expressionIndex = 0, bool withAnimation = true, bool useCache = true)
         {
