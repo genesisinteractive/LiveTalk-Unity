@@ -193,7 +193,7 @@ namespace LiveTalk.Core
                         var imgRgbData = TextureUtils.Texture2DToFrame(drivingFrame);
                         UnityEngine.Object.DestroyImmediate(drivingFrame);
 
-                        (Frame generatedImg, LivePortraitPredInfo updatedPredInfo) prediction = default;
+                        (Frame generatedImg, LivePortraitPredInfo updatedPredInfo, float[] pose) prediction = default;
                         yield return TaskYield.Wait(ProcessNextFrameAsync(processResult, predInfo, imgRgbData),
                             r => prediction = r, "LivePortraitInference.ProcessNextFrame");
                         predInfo = prediction.updatedPredInfo;
@@ -201,6 +201,9 @@ namespace LiveTalk.Core
                         if (prediction.generatedImg.data != null)
                         {
                             var generatedImgTexture = TextureUtils.FrameToTexture2D(prediction.generatedImg);
+                            // Pose before frame: a consumer that reads Poses on
+                            // dequeue must find this frame's entry already there.
+                            outputStream.Poses?.Add(prediction.pose);
                             outputStream.Queue.Enqueue(generatedImgTexture);
                             Logger.LogVerbose($"[LivePortraitMuseTalkAPI] Processed frame {processedFrames + 1}/{drivingStream.TotalExpectedFrames}");
                         }
@@ -685,14 +688,14 @@ namespace LiveTalk.Core
         /// <param name="predInfo">The prediction state information for maintaining frame continuity</param>
         /// <param name="drivingFrame">The current driving frame containing motion information to transfer</param>
         /// <returns>A task containing the generated animated frame and updated prediction state</returns>
-        private async Task<(Frame, LivePortraitPredInfo)> ProcessNextFrameAsync(
+        private async Task<(Frame, LivePortraitPredInfo, float[])> ProcessNextFrameAsync(
             ProcessSourceImageResult processResult,
             LivePortraitPredInfo predInfo,
             Frame drivingFrame)
         {
             return await Task.Run(async () => 
             {
-                var (Ip, updatedPredInfo) = await Predict(
+                var (Ip, updatedPredInfo, pose) = await Predict(
                     processResult.XsInfo, 
                     processResult.Rs, 
                     processResult.Fs, 
@@ -705,9 +708,104 @@ namespace LiveTalk.Core
                     processResult.CropInfo.Transform, 
                     processResult.SrcImg, 
                     processResult.MaskOri);
-                return (drivingImg, updatedPredInfo);
+                return (drivingImg, updatedPredInfo, pose);
             });
         }
+
+        #endregion
+
+        #region Pose rendering (no extractor)
+
+        // The source most recently prepared by RenderPosesAsync, keyed on the
+        // texture's native id so a second call for the same portrait skips
+        // face analysis + appearance extraction (~1 s).
+        private ProcessSourceImageResult _poseSource;
+        private Texture2D _poseSourceTexture;
+
+        /// <summary>
+        /// Renders frames directly from final driving keypoint vectors — the
+        /// 63 floats <c>warping_spade</c> consumes, as recorded in
+        /// <see cref="FrameStream.Poses"/> and persisted by an avatar's
+        /// <c>motion.bin</c>. No motion extractor runs: the pose <em>is</em>
+        /// the extractor's output. This is what makes a pose that never
+        /// existed in a driving clip — a blend between two authored frames,
+        /// a peak held with the idle clip's micro-motion — renderable.
+        ///
+        /// One session for the whole batch; the source is prepared once per
+        /// portrait and reused across calls. <paramref name="onFrame"/> is
+        /// called on the main thread with the frame index and the pasted-back
+        /// full-size frame; the caller owns the texture.
+        /// </summary>
+        public IEnumerator RenderPosesAsync(
+            Texture2D sourceImage,
+            IReadOnlyList<float[]> poses,
+            Action<int, Texture2D> onFrame)
+        {
+            if (sourceImage == null) throw new ArgumentNullException(nameof(sourceImage));
+            if (poses == null) throw new ArgumentNullException(nameof(poses));
+            if (onFrame == null) throw new ArgumentNullException(nameof(onFrame));
+
+            try
+            {
+                if (_config.MemoryUsage == MemoryUsage.Optimal)
+                    LoadMaskTemplate();
+
+                yield return TaskYield.Wait(StartSession(), "LivePortraitInference.RenderPoses.StartSession");
+
+                if (_poseSource == null || !ReferenceEquals(_poseSourceTexture, sourceImage) || _poseSourceTexture == null)
+                {
+                    var rgb = TextureUtils.ConvertTexture2DToRGB24(sourceImage);
+                    var srcFrame = TextureUtils.Texture2DToFrame(rgb);
+                    ProcessSourceImageResult prepared = null;
+                    yield return TaskYield.Wait(ProcessSourceImageAsync(srcFrame), r => prepared = r,
+                        "LivePortraitInference.RenderPoses.ProcessSourceImage");
+                    _poseSource = prepared;
+                    _poseSourceTexture = sourceImage;
+                }
+
+                var source = _poseSource;
+                for (int i = 0; i < poses.Count; i++)
+                {
+                    var pose = poses[i];
+                    if (pose == null || pose.Length != 21 * 3)
+                        throw new ArgumentException($"Pose {i} must be 63 floats (21 keypoints × xyz); got {pose?.Length ?? 0}.");
+
+                    Frame rendered = default;
+                    yield return TaskYield.Wait(RenderPoseAsync(source, pose), r => rendered = r,
+                        $"LivePortraitInference.RenderPose[{i}]");
+                    onFrame(i, TextureUtils.FrameToTexture2D(rendered));
+                }
+            }
+            finally
+            {
+                EndSession();
+                if (_config.MemoryUsage == MemoryUsage.Optimal)
+                    _maskTemplate = Frame.Zero;
+            }
+        }
+
+        /// <summary>
+        /// Drops the cached prepared source (a new portrait, or memory).
+        /// </summary>
+        public void ForgetPoseSource()
+        {
+            _poseSource = null;
+            _poseSourceTexture = null;
+        }
+
+        private async Task<Frame> RenderPoseAsync(ProcessSourceImageResult source, float[] pose)
+        {
+            return await Task.Run(async () =>
+            {
+                var output = await WarpingSpade(source.Fs, source.Xs, pose);
+                var crop = FrameUtils.TensorToFrame(output, 0, 1);
+                return PasteBack(crop, source.CropInfo.Transform, source.SrcImg, source.MaskOri);
+            });
+        }
+
+        #endregion
+
+        #region Private Methods - Prediction
         
         /// <summary>
         /// Asynchronously predicts and generates an animated frame from the driving image.
@@ -722,7 +820,7 @@ namespace LiveTalk.Core
         /// <param name="predInfo">Prediction state information for frame continuity</param>
         /// <returns>A task containing the generated animated frame and updated prediction info</returns>
         /// <exception cref="InvalidOperationException">Thrown when face detection or prediction fails</exception>
-        private async Task<(Frame, LivePortraitPredInfo)> Predict(
+        private async Task<(Frame, LivePortraitPredInfo, float[])> Predict(
             MotionInfo xSInfo, float[,] Rs, Tensor<float> fs, float[] xs, 
             Frame img, LivePortraitPredInfo predInfo)
         {
@@ -786,7 +884,9 @@ namespace LiveTalk.Core
             xDNew = await Stitching(xs, xDNew);
             var output = await WarpingSpade(fs, xs, xDNew);
             var resultTexture = FrameUtils.TensorToFrame(output, 0, 1);
-            return (resultTexture, predInfo);
+            // xDNew is the pose this frame was rendered from; RenderPosesAsync
+            // reproduces the frame from it alone.
+            return (resultTexture, predInfo, xDNew);
         }
         
         /// <summary>

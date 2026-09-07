@@ -38,7 +38,18 @@ Procedural layers (all windowed to zero at both ends of the clip):
 * ``micro``: slow low-amplitude noise on brows and mouth corners.
 """
 
+import os
+import sys
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+import driver_config  # noqa: E402
+
 FPS = 25
+_fps = (driver_config.load().get("scene") or {}).get("fps")
+if _fps:
+    FPS = int(_fps)
 
 # Shared defaults; a clip overrides what it needs.
 DEFAULTS = dict(

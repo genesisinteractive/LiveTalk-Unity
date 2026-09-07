@@ -50,6 +50,7 @@ namespace LiveTalk.API
         public List<string> TextLines { get; set; } = new List<string>();
         public int ExpressionIndex { get; set; }
         public bool WithAnimation { get; set; } = true;
+        public bool UseCache { get; set; } = true;
     }
 
     /// <summary>
@@ -417,7 +418,14 @@ namespace LiveTalk.API
         /// </list>
         /// </summary>
         /// <param name="withAnimation">If false, plays audio only (useful for characters without avatars)</param>
-        public void QueueSpeech(string text, int expressionIndex = 0, bool withAnimation = true)
+        /// <param name="useCache">
+        /// Forwarded to <see cref="Character.SpeakAsync"/>. False synthesises a
+        /// new take of the same text and overwrites the audio cache; true
+        /// (default) serves a matching wav when one exists. Lip-sync frames
+        /// key on that wav's content hash, so a later animated speak of the
+        /// new take misses the old mouths.
+        /// </param>
+        public void QueueSpeech(string text, int expressionIndex = 0, bool withAnimation = true, bool useCache = true)
         {
             if (_character == null)
             {
@@ -455,7 +463,8 @@ namespace LiveTalk.API
             { 
                 TextLines = new List<string>(lines),
                 ExpressionIndex = expressionIndex,
-                WithAnimation = withAnimation
+                WithAnimation = withAnimation,
+                UseCache = useCache
             };
             
             _speechQueue.Enqueue(request);
@@ -1015,7 +1024,8 @@ namespace LiveTalk.API
                                 {
                                     hasError = true;
                                     ReportSpeechError(epoch, "Audio generation error", ex);
-                                }
+                                },
+                                useCache: request.UseCache
                             );
                             
                             yield return audioCoroutine;
@@ -1093,7 +1103,8 @@ namespace LiveTalk.API
                                 Logger.Log($"[CharacterPlayer] Speech stream started at t={Time.realtimeSinceStartup:F3}s ({speech.SecondsAvailable:F2}s of audio)");
                             },
                             onSpeechChunk: null,
-                            startFrameIndexProvider: startFrameProvider
+                            startFrameIndexProvider: startFrameProvider,
+                            useCache: request.UseCache
                         );
                         
                         // Start the speech generation

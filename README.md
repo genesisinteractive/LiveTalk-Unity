@@ -29,6 +29,7 @@ backend and the storage layout — see [Migrating from 1.x](#migrating-from-1x).
 - [Speak with CharacterPlayer](#speak-with-characterplayer)
 - [Speak directly with SpeakAsync](#speak-directly-with-speakasync)
 - [DialogueOrchestrator](#dialogueorchestrator)
+- [Performances (scripted scenes)](#performances-scripted-scenes)
 - [Raw animation without a character](#raw-animation-without-a-character)
 - [Caching](#caching)
 - [Error handling contract](#error-handling-contract)
@@ -228,7 +229,9 @@ Also: `LoadAvatarAsync(avatarId, onComplete, onError)`,
 ### How the driving clips are applied
 
 Each expression is a bundled 25 fps clip of a rendered face
-(`Resources/driving/*.mp4`, authored with `Tools~/driving_clips/`). The clips
+(`Resources/driving/*.mp4`). Rebuild them from scratch with
+`python3 Tools~/driving_clips/build.py` (edit the SETTINGS block in that
+file, then run; see `Tools~/driving_clips/README.md`). The clips
 return to rest and share the lip-sync clock. Avatar creation renders one
 LivePortrait frame per driving frame. A change to the clips or the crop
 recipe bumps `Avatar.Version` and rebuilds.
@@ -431,6 +434,15 @@ clip is already on disk. TTS requests are serialised through one voice queue and
 MuseTalk requests through another, so concurrent `SpeakAsync` calls are safe
 and simply take turns.
 
+To roll a new take of the same voice and text without turning the whole cache
+off, pass `useCache: false`. That call skips the audio cache **read**,
+synthesises, and still **writes** the new wav so the next default
+`SpeakAsync` hits it. Lip-sync frames include that wav's content hash, so
+a later animated speak of the new take misses mouths generated against the
+old wav — the host does not delete folders. Voice-only (`expressionIndex:
+-1`) never runs MuseTalk. `LiveTalkAPI.SetCacheEnabled(false)` is a global
+switch, not a per-utterance skip.
+
 ## DialogueOrchestrator
 
 Turn-based multi-character dialogue over several `CharacterPlayer`s: it
@@ -460,6 +472,91 @@ orchestrator.QueueDialogueBatch(new List<DialogueOrchestrator.DialogueSegment>
 Also: `UnregisterCharacter(id)`, `Stop()`, `ClearQueue()`, `IsPlaying`,
 `QueuedDialogueCount`, `CurrentSpeakerId`, `OnDialogueStarted`, `OnError`.
 
+## Performances (scripted scenes)
+
+`CharacterPlayer` and `DialogueOrchestrator` are for conversations where the
+next line is not known: one utterance at a time, the face idles between them,
+each line carries its own expression. A **scripted scene** is the opposite —
+everything is known before the first frame — and wants two independent tracks
+on one clock:
+
+- an **expression track**: what the face does over time, regardless of speech —
+  play an expression clip through, or play to its peak and *hold* it with the
+  idle clip's own micro-motion; blend into the next; react while someone else
+  is talking;
+- a **speech track**: timed utterances by any character, lip-synced onto
+  *whatever the expression track has at that tick*, overlapping across
+  characters when a line interrupts another.
+
+```csharp
+var perf = new Performance { DefaultGap = 0.3f };
+
+// Lines chain after the previous one by default (any character).
+var l1 = perf.AddUtterance(alex, "That's because it bends it.");
+var l2 = perf.AddUtterance(you,  "…It bends time.");                  // voice-only character
+var l3 = perf.AddUtterance(alex, "I've been saving that for three weeks.",
+                           Anchor.End(l2, -0.2f));                    // steps on the end of l2
+
+// Expressions are placed independently of speech.
+var smirk = perf.AddExpression(alex, 3 /* smile */, Anchor.Start(l1, -0.3f));   // face leads the line
+smirk.Mode = ExpressionMode.HoldAtPeak; smirk.Peak01 = 0.6f; smirk.HoldSeconds = 2f; smirk.Micro01 = 0.15f;
+perf.AddExpression(alex, 6 /* confused */, Anchor.Start(l2, 0.4f));          // reacts while `you` talk
+
+yield return api.RenderPerformanceAsync(perf,
+    rendered =>
+    {
+        var player = api.CreatePerformancePlayer(rendered);
+        player.OnFrame   += (characterId, tex) => { if (characterId == alex.Id) rawImage.texture = tex; };
+        player.OnCaption += c => caption.text = c.Text;
+        player.OnReady   += () => player.Play();
+    },
+    onError: ex => Debug.LogError(ex),
+    onProgress: (stage, p) => Debug.Log($"{p:P0} {stage}"));
+```
+
+What rendering does, once per fingerprint (cues + characters + voices):
+audio is synthesised (or loaded from the speech cache) **without playing
+it** — `SpeakAsync` with `expressionIndex: -1` only produces a clip.
+`IsPerformanceRendered` is true once the folder exists, so a host can
+preview those clips itself on the first bake. `CreatePerformancePlayer`
+is what actually plays wavs and frames.
+
+What rendering does, once per fingerprint (cues + characters + voices):
+
+1. **Audio** for every utterance (the normal speech cache, voice + text).
+2. **Resolve**: anchors become seconds; the expression track becomes a *pose
+   per tick* for each animated character. Idle (expression 0) runs underneath,
+   forward, wrapping. A cue blends in from whatever pose is on screen, plays its
+   clip (or plays to the peak and holds), and blends back out. A tick that lands
+   exactly on a stored driving frame is that frame — free. Blends and holds are
+   rendered from the avatar's recorded poses (`motion.bin`, avatar v2) into a
+   pose cache, once ever per avatar + pose.
+3. **Lip-sync** per spoken utterance over the base frames its ticks have.
+   Mouths are cached on `hash(voice, text, avatar, planSlice)` — the
+   sequence of base faces under the line, not the performance clock.
+   Nudging a cue that does not change that sequence reuses the mouths;
+   a re-timed expression track under the line misses and re-inpaints.
+   Chat lip-sync (`CharacterPlayer`) still keys on expression index.
+4. A **manifest** (`perf_<fingerprint>/performance.json` under the cache) with a
+   frame path per tick per character, the wavs, and captions. Frames are
+   referenced, not copied (avatar PNGs, pose cache, mouth cache).
+
+`PerformancePlayer` streams frames from disk `Lookahead` ticks ahead of the play
+head, plays each utterance's wav on a per-character `AudioSource` child, and
+raises `OnFrame(characterId, texture)`, `OnUtteranceStarted`, `OnCaption` /
+`OnCaptionCleared`, `OnEnded`. Transport: `Play`, `Pause`, `Resume`, `Stop`,
+`Seek(seconds)`, `Time`, `PlaybackState`.
+
+`Anchor.At(seconds)`, `Anchor.Start(cue, offset)`, `Anchor.End(cue, offset)`,
+`Anchor.AfterPrevious(offset)`. Two utterances of the *same* character never
+overlap (the later one is pushed); different characters may. An `Utterance`
+with `LipSync = false` plays its audio over the face as it is (a vocalisation,
+or a character with no avatar).
+
+`api.RenderPosesAsync(portrait, poses, onFrame)` is the primitive underneath:
+frames from 63-float driving poses, no extractor. Poses come from
+`Avatar` frames (recorded at build) or any interpolation / offset of them.
+
 ## Raw animation without a character
 
 The two engines are also exposed directly; each returns a `FrameStream`.
@@ -486,12 +583,20 @@ and `DialogueOrchestrator` — read and write two kinds of entry under
 | Entry | Key | On disk |
 |---|---|---|
 | Speech audio | `hash(voiceId, text)` | `<key>.wav` |
-| Lip-sync frames | `hash(voiceId, text, avatarId, expressionIndex)` | `<key>_frames/frame_000000.png …` |
+| Lip-sync frames (chat) | `hash(voiceId, text, avatarId, expressionIndex, wavHash)` | `<key>_frames/frame_000000.png …` |
+| Lip-sync frames (performances) | `hash(voiceId, text, avatarId, planSlice, wavHash)` | `<key>_frames/frame_000000.png …` |
+| Rendered pose (performances) | `hash(avatarId, pose)` | `pose_<key>.png` |
+| Rendered performance | performance fingerprint | `perf_<key>/performance.json` |
 
 Because the key is the voice, not the character, two characters sharing a voice
 share the audio, a replaced voice never replays old takes, and the same line at
-two expressions never shares frames. A frames folder left short by a failed run
-is deleted rather than taken as a hit next time.
+two expressions never shares frames. Lip-sync frames also hash the wav
+bytes: a re-rolled take misses mouths generated against the previous wav
+(`frames_cache_v3` / `perf_mouth_v2`; old folders are simply never matched).
+A frames folder left short by a failed run is deleted rather than taken as
+a hit next time. `SpeakAsync(..., useCache: false)` and
+`QueueSpeech(..., useCache: false)` skip the audio read for that call only
+and overwrite the matching wav.
 
 Avatars, voices and characters are **not** cache and live under the save
 location; the avatar folder is its own cache (asking for the same portrait

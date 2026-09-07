@@ -24,6 +24,7 @@ from mathutils import Vector, noise
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lp_scene as S  # noqa: E402
+import driver_config  # noqa: E402
 
 argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 ap = argparse.ArgumentParser()
@@ -31,17 +32,22 @@ ap.add_argument("--src", required=True)
 ap.add_argument("--out", required=True)
 ap.add_argument("--test", default=None, help="folder for test stills")
 ap.add_argument("--flicker", type=int, default=0)
-ap.add_argument("--samples", type=int, default=48)
+ap.add_argument("--samples", type=int, default=None)
 args = ap.parse_args(argv)
+if args.samples is None:
+    args.samples = int((driver_config.load().get("scene") or {}).get("dress_samples") or 48)
 
-# ---------------------------------------------------------------- look knobs
+# ---------------------------------------------------------------- look knobs (overridden by build.py via LP_DRIVER_CONFIG)
 HAIR_COLOR = (0.052, 0.030, 0.017, 1.0)      # dark brown
 HAIR_STRANDS = 16000   # short cut needs density for coverage
 HAIR_POINTS = 8
 HAIR_ROOT_RADIUS = 0.00048                  # fat enough to cover a pixel: thinner strands shimmer frame to frame
 HAIR_TIP_RADIUS = 0.00018
+HAIR_ROUGHNESS = 0.58
+BROW_COLOR = (0.055, 0.033, 0.019, 1.0)
 BROW_STRANDS = 760                           # per brow
 BROW_ROOT_RADIUS = 0.00017
+LASH_COLOR = (0.016, 0.010, 0.008, 1.0)
 LASH_UPPER_PER_ROOT = 1
 LASH_LOWER_PER_ROOT = 0
 LASH_RADIUS = 0.00011
@@ -49,12 +55,42 @@ TOP_COLOR = (0.075, 0.105, 0.150, 1.0)       # slate blue cotton
 SKIN_SSS_WEIGHT = 0.22
 SKIN_SSS_SCALE = 0.006
 SKIN_ROUGHNESS = 0.46
+LOOK_SEED = 7
+
+
+def _as_color(v, fallback):
+    if not v:
+        return fallback
+    t = tuple(v)
+    return t if len(t) == 4 else fallback
+
+
+_look = (driver_config.load().get("look") or {})
+if _look:
+    HAIR_COLOR = _as_color(_look.get("hair_color"), HAIR_COLOR)
+    HAIR_STRANDS = int(_look.get("hair_strands", HAIR_STRANDS))
+    HAIR_POINTS = int(_look.get("hair_points", HAIR_POINTS))
+    HAIR_ROOT_RADIUS = float(_look.get("hair_root_radius", HAIR_ROOT_RADIUS))
+    HAIR_TIP_RADIUS = float(_look.get("hair_tip_radius", HAIR_TIP_RADIUS))
+    HAIR_ROUGHNESS = float(_look.get("hair_roughness", HAIR_ROUGHNESS))
+    BROW_COLOR = _as_color(_look.get("brow_color"), BROW_COLOR)
+    BROW_STRANDS = int(_look.get("brow_strands", BROW_STRANDS))
+    BROW_ROOT_RADIUS = float(_look.get("brow_root_radius", BROW_ROOT_RADIUS))
+    LASH_COLOR = _as_color(_look.get("lash_color"), LASH_COLOR)
+    LASH_UPPER_PER_ROOT = int(_look.get("lash_upper_per_root", LASH_UPPER_PER_ROOT))
+    LASH_LOWER_PER_ROOT = int(_look.get("lash_lower_per_root", LASH_LOWER_PER_ROOT))
+    LASH_RADIUS = float(_look.get("lash_radius", LASH_RADIUS))
+    TOP_COLOR = _as_color(_look.get("top_color"), TOP_COLOR)
+    SKIN_SSS_WEIGHT = float(_look.get("skin_sss_weight", SKIN_SSS_WEIGHT))
+    SKIN_SSS_SCALE = float(_look.get("skin_sss_scale", SKIN_SSS_SCALE))
+    SKIN_ROUGHNESS = float(_look.get("skin_roughness", SKIN_ROUGHNESS))
+    LOOK_SEED = int(_look.get("seed", LOOK_SEED))
 
 scn, body, arm = S.open_character(args.src)
 hm = S.HeadMeasure(body, arm)
 print("[rich]", hm.describe())
 me = body.data
-rng = random.Random(7)
+rng = random.Random(LOOK_SEED)
 C = hm.skull_center
 
 
@@ -700,9 +736,9 @@ tune_skin(); tune_eyes(); tune_teeth()
 ensure_rest_position()
 paint_albedo()
 
-brow_mat = hair_material("LP_hair_brow", (0.055, 0.033, 0.019, 1.0), roughness=0.45, tip_lighten=0.2)
-lash_mat = hair_material("LP_hair_lash", (0.016, 0.010, 0.008, 1.0), roughness=0.45, tip_lighten=0.0, random_dark=0.8)
-head_mat = hair_material("LP_hair_head", HAIR_COLOR, roughness=0.58, tip_lighten=0.04)  # matte: bright strand sparkle flickers frame to frame
+brow_mat = hair_material("LP_hair_brow", BROW_COLOR, roughness=0.45, tip_lighten=0.2)
+lash_mat = hair_material("LP_hair_lash", LASH_COLOR, roughness=0.45, tip_lighten=0.0, random_dark=0.8)
+head_mat = hair_material("LP_hair_head", HAIR_COLOR, roughness=HAIR_ROUGHNESS, tip_lighten=0.04)  # matte: bright strand sparkle flickers frame to frame
 
 make_curves("LP_browL", brow_strands(+1), brow_mat)
 make_curves("LP_browR", brow_strands(-1), brow_mat)
@@ -713,7 +749,7 @@ add_top()
 cam, frame_h = S.setup_camera(scn, hm)
 S.setup_lights(scn, hm)
 S.setup_backdrop(scn, hm)
-S.setup_render(scn, 0, 0, samples=args.samples)
+S.setup_render(scn, 0, 0, samples=args.samples, engine=S.ENGINE)
 print("[rich] camera", tuple(round(c, 3) for c in cam.location), "frame_h %.3f" % frame_h)
 
 for k in me.shape_keys.key_blocks:

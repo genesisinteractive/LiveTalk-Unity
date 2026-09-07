@@ -692,14 +692,29 @@ namespace LiveTalk.API
         /// <see cref="FrameStream.StartFrameIndex"/> — a frames-cache hit
         /// replays from the start it was rendered with, not the one requested.
         /// </param>
+        /// <param name="useCache">
+        /// Governs the <em>audio</em> cache only. When true (the default), a
+        /// matching wav is served instead of synthesising. When false, this
+        /// call always generates a new take and overwrites that wav so the
+        /// next default call hits it. Lip-sync frames are keyed on that wav's
+        /// content hash as well as voice, text, avatar and expression: a new
+        /// take misses automatically. <paramref name="expressionIndex"/> -1
+        /// never runs MuseTalk. Independent of
+        /// <see cref="LiveTalkAPI.SetCacheEnabled"/>, which is a global
+        /// on/off rather than a per-utterance skip.
+        /// </param>
         /// <returns>Coroutine for audio generation</returns>
         /// <remarks>
         /// Audio is cached on <c>(Voice.Id, text)</c> and frames on
-        /// <c>(Voice.Id, text, Avatar.Id, expressionIndex)</c>, so a replaced
-        /// voice never replays old takes and the same line at two expressions
-        /// never shares frames. The start frame is recorded inside the frames
-        /// entry rather than keyed on, so a line has one entry whatever the
-        /// idle loop was doing when it was first spoken.
+        /// <c>(Voice.Id, text, Avatar.Id, expressionIndex, wavHash)</c>, so a
+        /// replaced voice never replays old takes, the same line at two
+        /// expressions never shares frames, and a re-rolled wav never replays
+        /// mouths generated against the previous take. The start frame is
+        /// recorded inside the frames entry rather than keyed on, so a line
+        /// has one entry whatever the idle loop was doing when it was first
+        /// spoken. Pass <paramref name="useCache"/> false to roll a new wav
+        /// of the same line without turning the whole cache off;
+        /// <paramref name="expressionIndex"/> -1 still does not run MuseTalk.
         ///
         /// Every failure reaches <paramref name="onError"/>: a faulted speech
         /// synthesis, a lip-sync model that failed to load, a driving-frame
@@ -718,15 +733,16 @@ namespace LiveTalk.API
             Action<Exception> onError = null,
             Action<float[], int> onSpeechChunk = null,
             Action<SpeechStream> onStreamStarted = null,
-            int startFrameIndex = 0)
+            int startFrameIndex = 0,
+            bool useCache = true)
         {
             int start = Math.Max(0, startFrameIndex);
             return SpeakAsync(text, expressionIndex, onAudioReady, onAnimationComplete, onError, onSpeechChunk,
-                onStreamStarted, _ => start);
+                onStreamStarted, _ => start, useCache);
         }
 
         /// <summary>
-        /// As <see cref="SpeakAsync(string, int, Action{FrameStream, AudioClip}, Action{FrameStream}, Action{Exception}, Action{float[], int}, Action{SpeechStream}, int)"/>,
+        /// As <see cref="SpeakAsync(string, int, Action{FrameStream, AudioClip}, Action{FrameStream}, Action{Exception}, Action{float[], int}, Action{SpeechStream}, int, bool)"/>,
         /// but the start frame is asked for at the moment lip-sync generation
         /// begins — after synthesis on the batch path, at the first audio chunk
         /// when streaming — rather than when the line is queued. The argument
@@ -743,11 +759,12 @@ namespace LiveTalk.API
             Action<Exception> onError,
             Action<float[], int> onSpeechChunk,
             Action<SpeechStream> onStreamStarted,
-            Func<int, int> startFrameIndexProvider)
+            Func<int, int> startFrameIndexProvider,
+            bool useCache = true)
         {
             return TaskYield.Guard(
                 SpeakCore(text, expressionIndex, onAudioReady, onAnimationComplete, onError, onSpeechChunk, onStreamStarted,
-                    startFrameIndexProvider),
+                    startFrameIndexProvider, useCache),
                 onError,
                 "Character.SpeakAsync");
         }
@@ -774,6 +791,15 @@ namespace LiveTalk.API
         /// </summary>
         private const float FirstChunkFramesLeadSeconds = 0.2f;
 
+        static string ResolveFramesCacheKey(
+            string voiceId, string text, string avatarId, int expressionIndex,
+            AudioClip clip, string wavPath)
+        {
+            string audioHash = HashUtils.GenerateAudioContentHash(wavPath)
+                ?? AudioFileIO.ContentHash(clip);
+            return HashUtils.GenerateFramesCacheKey(voiceId, text, avatarId, expressionIndex, audioHash);
+        }
+
         private IEnumerator SpeakCore(
             string text,
             int expressionIndex,
@@ -782,7 +808,8 @@ namespace LiveTalk.API
             Action<Exception> onError,
             Action<float[], int> onSpeechChunk,
             Action<SpeechStream> onStreamStarted,
-            Func<int, int> startFrameIndexProvider)
+            Func<int, int> startFrameIndexProvider,
+            bool useCache)
         {
             var start = System.Diagnostics.Stopwatch.StartNew();
             if (!IsDataLoaded)
@@ -834,44 +861,48 @@ namespace LiveTalk.API
 
             AudioClip audioClip = null;
             string cacheKey = null;
+            string cachedWavPath = null;
             string framesCacheKey = null;
             bool audioFromCache = false;
             bool framesCached = false;
             string cachedFramesFolder = null;
             int cachedFrameCount = 0;
 
-            // Check audio cache first
+            // Audio cache. useCache false skips the read so this call
+            // synthesises a new take; the write after generation still
+            // overwrites the wav. Frames are looked up only after we have
+            // that wav — they key on its content hash.
             if (LiveTalkCache.IsEnabled && !string.IsNullOrEmpty(Voice.Id))
             {
                 cacheKey = HashUtils.GenerateSpeechCacheKey(Voice.Id, text);
-                if (expressionIndex != -1)
+                if (useCache)
                 {
-                    framesCacheKey = HashUtils.GenerateFramesCacheKey(Voice.Id, text, Avatar.Id, expressionIndex);
-                    // Known before synthesis so the streaming decision below
-                    // can defer to cached frames when they exist.
-                    (framesCached, cachedFramesFolder, cachedFrameCount) = LiveTalkCache.CheckFramesCacheExists(framesCacheKey);
-                    framesCached &= cachedFrameCount > 0;
-                }
-                var (exists, cachedPath) = LiveTalkCache.CheckExists(cacheKey);
-                
-                if (exists)
-                {
-                    Logger.LogVerbose($"[Character] Loading cached audio for: {text[..Math.Min(30, text.Length)]}...");
-                    var loadTask = AudioFileIO.LoadClipAsync(cachedPath);
-                    yield return new WaitUntil(() => loadTask.IsCompleted);
+                    var (exists, cachedPath) = LiveTalkCache.CheckExists(cacheKey);
 
-                    // A cache hit that cannot be read is not fatal — the line
-                    // is regenerated below — but it is not silent either.
-                    if (loadTask.IsFaulted)
+                    if (exists)
                     {
-                        Logger.LogWarning($"[Character] Cached audio unreadable, regenerating: {cachedPath}: " +
-                            loadTask.Exception?.GetBaseException().Message);
+                        Logger.LogVerbose($"[Character] Loading cached audio for: {text[..Math.Min(30, text.Length)]}...");
+                        var loadTask = AudioFileIO.LoadClipAsync(cachedPath);
+                        yield return new WaitUntil(() => loadTask.IsCompleted);
+
+                        // A cache hit that cannot be read is not fatal — the line
+                        // is regenerated below — but it is not silent either.
+                        if (loadTask.IsFaulted)
+                        {
+                            Logger.LogWarning($"[Character] Cached audio unreadable, regenerating: {cachedPath}: " +
+                                loadTask.Exception?.GetBaseException().Message);
+                        }
+                        else if (loadTask.Result != null)
+                        {
+                            audioClip = loadTask.Result;
+                            audioFromCache = true;
+                            cachedWavPath = cachedPath;
+                        }
                     }
-                    else if (loadTask.Result != null)
-                    {
-                        audioClip = loadTask.Result;
-                        audioFromCache = true;
-                    }
+                }
+                else
+                {
+                    Logger.LogVerbose($"[Character] Skipping audio cache read for: {text[..Math.Min(30, text.Length)]}...");
                 }
             }
 
@@ -885,10 +916,12 @@ namespace LiveTalk.API
             // Generate new audio if not cached (with queuing)
             if (audioClip == null)
             {
-                // Stream lip-sync only for a line that will actually be
-                // animated from scratch: cached frames replay faster than
-                // either path, and voice-only has nothing to animate.
-                streamed = expressionIndex != -1 && liveTalkAPI.StreamLipSync && !framesCached;
+                // Stream lip-sync only while synthesising a line that will
+                // actually be animated from scratch. Cached frames need the
+                // wav hash, which exists only after audio is ready, so a
+                // generate path cannot be a frames hit. Voice-only has
+                // nothing to animate.
+                streamed = expressionIndex != -1 && liveTalkAPI.StreamLipSync;
 
                 // Acquire voice queue lock. The lease is released in the
                 // finally below on every exit: success, a fault rethrown by
@@ -936,7 +969,7 @@ namespace LiveTalk.API
                             GenerateAnimationWithQueue(liveTalkAPI, expression.Data,
                                 start => liveTalkAPI.GenerateTalkingHeadIncremental(expression.Data, extractor, start),
                                 startFrameIndexProvider, expectedFrames: -1,
-                                animationStream, framesCacheKey, onAnimationComplete, extractor),
+                                animationStream, framesCacheKey: null, onAnimationComplete, extractor),
                             ex =>
                             {
                                 animationStream.Fail(ex);
@@ -999,20 +1032,31 @@ namespace LiveTalk.API
                     liveTalkAPI.VoiceQueue.Release();
                 }
                 
-                // Save audio to cache (fire and forget)
+                // Save audio to cache. Animated calls wait so the wav is on
+                // disk before the frames key hashes it (same bytes as a later
+                // cache hit). Voice-only does not need that and stays fire-and-forget.
                 if (LiveTalkCache.IsEnabled && !string.IsNullOrEmpty(cacheKey) && audioClip != null)
                 {
                     string cachePath = LiveTalkCache.GetFilePath(cacheKey);
                     if (!string.IsNullOrEmpty(cachePath))
                     {
                         var saveTask = AudioFileIO.SaveClipAsync(audioClip, cachePath);
-                        _ = saveTask.ContinueWith(t => 
+                        if (expressionIndex != -1)
                         {
-                            if (t.IsFaulted)
-                                Logger.LogWarning($"[Character] Failed to save audio to cache: {t.Exception?.InnerException?.Message}");
-                            else
-                                Logger.LogVerbose($"[Character] Saved audio to cache: {cacheKey}");
-                        });
+                            yield return TaskYield.Wait(saveTask, "Character.SaveClip");
+                            cachedWavPath = cachePath;
+                        }
+                        else
+                        {
+                            cachedWavPath = cachePath;
+                            _ = saveTask.ContinueWith(t => 
+                            {
+                                if (t.IsFaulted)
+                                    Logger.LogWarning($"[Character] Failed to save audio to cache: {t.Exception?.InnerException?.Message}");
+                                else
+                                    Logger.LogVerbose($"[Character] Saved audio to cache: {cacheKey}");
+                            });
+                        }
                     }
                 }
             }
@@ -1026,7 +1070,7 @@ namespace LiveTalk.API
 
             outputStream ??= new FrameStream(0);
             
-            // For voice-only mode, both callbacks immediately
+            // Voice-only: audio is done. MuseTalk is not run.
             if (expressionIndex == -1)
             {
                 onAudioReady?.Invoke(outputStream, audioClip);
@@ -1039,11 +1083,23 @@ namespace LiveTalk.API
             // Streamed: the animation has been running since the first chunk
             // on the stream the host already holds. The finished clip is
             // delivered as always, for hosts that want the whole take.
+            // Frames for this wav are not written on the stream path (the
+            // hash exists only once the clip is finished); the next batch
+            // SpeakAsync of the same take fills the cache.
             if (streamed)
             {
                 onAudioReady?.Invoke(outputStream, audioClip);
                 Logger.Log($"[Character] Audio ready for {Name} in {start.Elapsed.TotalMilliseconds}ms (streamed; animation in progress)");
                 yield break;
+            }
+
+            // Frames key includes the wav hash, so a re-rolled take misses
+            // mouths generated against the previous wav without deleting them.
+            framesCacheKey = ResolveFramesCacheKey(Voice.Id, text, Avatar.Id, expressionIndex, audioClip, cachedWavPath);
+            if (!string.IsNullOrEmpty(framesCacheKey))
+            {
+                (framesCached, cachedFramesFolder, cachedFrameCount) = LiveTalkCache.CheckFramesCacheExists(framesCacheKey);
+                framesCached &= cachedFrameCount > 0;
             }
 
             // Check for cached animation frames

@@ -11,16 +11,68 @@ a rendered face is the cleaner driver: output frames are bit-identical
 while the face holds still, the clip returns exactly to its rest pose so
 it loops, and 10° of yaw transfers with pitch and roll flat.
 
-The shipped clips come from exactly this
-pipeline: `mblab_build.py` → `mblab_rich.py` → `render_clips.py` with the
-table in `clips.py`.
+The shipped clips come from `python3 build.py` with the SETTINGS block
+in that file and the gesture table in `clips.py`.
+
+## Generate
+
+From this folder:
+
+```bash
+python3 build.py
+```
+
+That is the whole pipeline: download + install MB-Lab 1.8.1, create the
+character, dress it, render every clip, encode
+`Resources/driving/<clip>.mp4` (the folder Unity loads). Intermediates
+land in `work/` next to this README. Full set (~1400 frames at 32 TAA
+samples) is about an hour on Apple Silicon; ~2.5 s/frame, hair-bound.
+
+```bash
+python3 build.py --preview                 # every 25th frame, 16 samples, no mp4
+python3 build.py --clips smile             # one clip into Resources/driving/
+python3 build.py --force                   # rebuild the .blend files
+python3 build.py --from render             # skip install / character / dress
+python3 build.py --atlas --test --flicker 10 --analyze
+```
+
+After changing **character or look** knobs, pass `--force` (or set
+`FORCE = True`) so the dressed `.blend` is rebuilt. Changing **render
+samples / CRF / which clips** does not need `--force`. Changing
+**framing** (focal length, head fraction) does — the camera is stored
+in the dressed blend.
+
+## Settings
+
+Every picture knob lives in the SETTINGS block at the top of `build.py`.
+Edit that file, then re-run. `build.py` writes `work/driver_config.json`
+and the Blender steps read it; you should not have to pass flags for a
+look change.
+
+| Knob | Default | What it changes |
+|---|---|---|
+| `BLENDER` | `/Applications/Blender.app/Contents/MacOS/Blender` | 4.5 binary; empty string auto-detects |
+| `CHARACTER` | `f_ca01` | MB-Lab id (printed at install) |
+| `RESOLUTION` / `FPS` | 512 / 25 | Must stay 512² 25 fps to match the shipped clips |
+| `FOCAL_MM` / `HEAD_FRACTION` | 85 / 0.85 | Framing; face fills ~60 % of the frame |
+| `BG` / `LIGHTS` / `LOOK` | `green` / `hard` / `AgX - High Contrast` | Extractor-facing look |
+| `ENGINE` | `EEVEE` | `CYCLES` is ~4× slower and did not change what the extractor read |
+| `RENDER_SAMPLES` / `ENCODE_CRF` | 32 / 21 | Quality vs time; mp4 is H.264 High / yuv420p |
+| `HAIR_*` / `BROW_*` / `LASH_*` / `TOP_COLOR` / `SKIN_*` | see file | Dressed look |
+| `CLIPS` | all seven | Subset without a CLI flag |
+| `MP4_DIR` | `<package>/Resources/driving` | Unity's load path |
+| `RESUME` / `FORCE` | True / False | Skip existing blends vs rebuild |
+
+Gesture timings, blinks and expression amplitudes stay in `clips.py` —
+those are the clip performances, not the render setup.
 
 ## Requirements
 
-- Blender 4.5 (`/Applications/Blender.app` on macOS; adjust paths).
+- Python 3 (stdlib only for `build.py`).
+- Blender 4.5 (`BLENDER` in `build.py`; `/Applications/Blender.app` on macOS).
 - **MB-Lab 1.8.1**, the `animate1978/MB-Lab` release tagged `1_8_1`
-  (`bl_info.blender = (4, 0, 0)`). `mblab_install.py` downloads and
-  installs it. Four things it needs on 4.5, all handled by the scripts:
+  (`bl_info.blender = (4, 0, 0)`). `build.py` downloads it. Four things
+  it needs on 4.5, all handled by the scripts:
   1. enable with `addon_utils.enable(..., default_set=True)` — otherwise
      `remove_censors()` reads a `None` preferences entry;
   2. do not use the addon's "Use EEVEE" toggle (writes the removed
@@ -30,49 +82,58 @@ table in `clips.py`.
      directory — re-point `iris_color.png` / `iris_bump.png` at load
      (`lp_scene.repath_images`);
   4. start from an empty homefile when running headless.
-- `ffmpeg` for assembling the mp4; Python 3 with Pillow + numpy for
-  `analyze.py` / `sheet.py`.
+- `ffmpeg` on `PATH` for assembling the mp4; Python 3 with Pillow + numpy
+  only if you run `analyze.py` / `sheet.py`.
+
+Do not run a Unity LivePortrait pass at the same time as a full render:
+Metal contention has silently killed a render at frame 0.
 
 ## Scripts
 
 | Script | Does |
 |---|---|
-| `mblab_install.py` | Download + install + enable MB-Lab into the user addons dir |
-| `mblab_build.py` | Create and finalize a realistic character (skin shader, 83 expression shape keys), save `mblab_char.blend` |
-| `lp_scene.py` | Shared: open + repath the character, measure the head, camera / lights / backdrop / render settings (512×512, 25 fps, 85 mm, grey) |
-| `mblab_rich.py` | Dress the character: eyebrows, eyelashes and a combed short hairstyle as hair Curves that follow the skin, subsurface skin, wet cornea, crew-neck top. `--test` renders five poses, `--flicker N` renders a slow yaw for a stability check |
-| `sk_atlas.py` | One still per shape key / head axis so a key's meaning and sign can be read before authoring |
+| **`build.py`** | **End-to-end entry.** SETTINGS + download MB-Lab + every Blender step + mp4 into `Resources/driving/` |
+| `mblab_install.py` | Copy + enable MB-Lab into this Blender's user addons dir (`--src` from `build.py`) |
+| `mblab_build.py` | Create and finalize a realistic character (skin shader, 83 expression shape keys) |
+| `lp_scene.py` | Shared: open + repath the character, measure the head, camera / lights / backdrop / render settings |
+| `mblab_rich.py` | Dress the character: eyebrows, eyelashes and a combed short hairstyle as hair Curves that follow the skin, subsurface skin, wet cornea, crew-neck top. `--test` / `--flicker` via `build.py` |
+| `sk_atlas.py` | One still per shape key / head axis so a key's meaning and sign can be read before authoring (`build.py --atlas`) |
 | `clips.py` | **The seven clips as data** — every timing, angle and amplitude |
-| `render_clips.py` | Bake a clip from the table (procedural layers + gesture curves), render the PNG sequence, encode the mp4 |
+| `render_clips.py` | Bake a clip from the table, render the PNG sequence, encode the mp4 |
 | `analyze.py` | Consecutive-frame MAD, first-vs-last MAD, background MAD at the expression peak, contact sheet |
 | `sheet.py` | Contact sheet of PNGs with optional crop / scale / labels |
+| `driver_config.py` | Loads `work/driver_config.json` written by `build.py` (`LP_DRIVER_CONFIG`) |
+
+The individual Blender scripts still accept `--` flags if you are
+debugging one stage; `build.py` is what writes the shipped mp4s.
 
 ## Building the clips
 
+`python3 build.py` is the generate path. The same stages, invoked by
+hand, look like this (`B` is the Blender 4.5 binary):
+
 ```bash
-B=/Applications/Blender.app/Contents/MacOS/Blender
-$B --background --python mblab_install.py
-$B --background --python mblab_build.py                       # -> mblab_char.blend (edit the save path)
-$B --background --python mblab_rich.py -- --src work/mblab_char.blend \
-     --out work/mblab_char_rich.blend --test work/rich_test --flicker 10
-$B --background --python sk_atlas.py -- --blend work/mblab_char_rich.blend --out work/atlas
-$B --background --python render_clips.py -- --blend work/mblab_char_rich.blend \
-     --frames work/frames --mp4 ../../Resources/driving            # all seven clips
-$B --background --python render_clips.py -- --blend work/mblab_char_rich.blend \
-     --frames work/preview --stride 25 --samples 16 --clips smile  # quick look, every 25th frame
-python analyze.py smile=work/frames/smile
+python3 build.py                          # recommended
+# equivalent:
+python3 build.py --from install           # same as the default
+B --background --python mblab_install.py -- --src work/mblab_src/MB-Lab-1_8_1
+B --background --python mblab_build.py -- --out work/mblab_char.blend
+B --background --python mblab_rich.py -- --src work/mblab_char.blend \
+     --out work/mblab_char_rich.blend
+B --background --python render_clips.py -- --blend work/mblab_char_rich.blend \
+     --frames work/frames --mp4 ../../Resources/driving
 ```
 
-`render_clips.py` renders ~2.5 s/frame on an M-series Mac at 32 TAA
-samples (the hair dominates); the full set (~1400 frames) is about an hour.
-`--stride N --samples 16` gives a contact-sheet preview in a couple of
-minutes. Frames are PNG; the mp4 is H.264 High / yuv420p / 25 fps, the same
-container family as the stock clips so Unity's `VideoClip` import is
+`--stride N --samples 16` (or `python3 build.py --preview`) gives a
+contact-sheet preview in a couple of minutes. Frames are PNG; the mp4 is
+H.264 High / yuv420p / 25 fps, the same container family as the stock
+clips so Unity's `VideoClip` import is
 unchanged.
 
 ## Editing a clip
 
-Everything is in `clips.py`. A clip row has `seconds`, `seed`, optional
+Look, framing, samples and encode live in `build.py` (SETTINGS). Motion
+lives in `clips.py`. A clip row has `seconds`, `seed`, optional
 overrides for the procedural layers (`breath`, `sway`, `blinks`,
 `saccades`, `micro`, `asym`), `beats` (instants a blink must not land on)
 and `gestures`: per-channel breakpoint lists `[(t, value), ...]` in
@@ -88,7 +149,7 @@ identical rest pose** — across all seven clips.
 
 - **512x512, 25 fps**, face filling ~55–65 % of the frame, plain neutral
   background, soft even lighting. Match the framing of the existing clips
-  (`lp_scene.py` owns it; do not change it per clip).
+  (`lp_scene.py` / `build.py` SETTINGS own it; do not change it per clip).
 - **Start and end at the same rest pose**, eased to zero velocity.
   Avatar creation wraps last→first without a motion-space blend; a clip
   that already returns to rest loops, and a shared rest pose makes cuts

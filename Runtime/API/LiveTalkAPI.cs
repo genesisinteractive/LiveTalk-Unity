@@ -176,6 +176,17 @@ namespace LiveTalk.API
         /// unknown or not applicable.
         /// </summary>
         public int StartFrameIndex { get; internal set; } = -1;
+
+        /// <summary>
+        /// For LivePortrait driving-frame generation: when non-null, the
+        /// generator appends the final 63-float driving keypoint vector it
+        /// rendered each frame from (post-stitching — exactly what
+        /// <c>warping_spade</c> consumed). One entry per frame queued, in
+        /// order. This is what an <see cref="API.Avatar"/> persists as
+        /// <c>motion.bin</c> so a frame can later be re-rendered, blended or
+        /// held without an extractor pass.
+        /// </summary>
+        internal List<float[]> Poses { get; set; }
         
         /// <summary>
         /// Gets a value indicating whether more frames are available for processing.
@@ -761,6 +772,15 @@ namespace LiveTalk.API
         /// <returns>An FrameStream for receiving generated animated frames</returns>
         /// <exception cref="ArgumentException">Thrown when source image or video player is null</exception>
         public FrameStream GenerateAnimatedTexturesAsync(Texture2D sourceImage, VideoPlayer videoPlayer, int maxFrames = -1)
+            => GenerateAnimatedTexturesAsync(sourceImage, videoPlayer, poseSink: null, maxFrames);
+
+        /// <summary>
+        /// As <see cref="GenerateAnimatedTexturesAsync(Texture2D, VideoPlayer, int)"/>,
+        /// additionally recording each frame's final driving pose into
+        /// <paramref name="poseSink"/> (see <see cref="FrameStream.Poses"/>).
+        /// </summary>
+        internal FrameStream GenerateAnimatedTexturesAsync(
+            Texture2D sourceImage, VideoPlayer videoPlayer, List<float[]> poseSink, int maxFrames = -1)
         {
             if (!_initialized)
             {
@@ -771,7 +791,7 @@ namespace LiveTalk.API
             int frameCount = CalculateFrameCount(videoPlayer, maxFrames);
             Logger.Log($"[LiveTalkAPI] Generating animated textures: {frameCount} driving frames from video");
 
-            var outputStream = new FrameStream(frameCount);
+            var outputStream = new FrameStream(frameCount) { Poses = poseSink };
             _controller.LoadDrivingFrames(videoPlayer, maxFrames);
             _controller.StartCoroutine(LiveTalkController.Produce(
                 _livePortrait.GenerateAsync(sourceImage, outputStream, _controller.DrivingFramesStream), outputStream,
@@ -807,6 +827,101 @@ namespace LiveTalk.API
                 "LiveTalkAPI.GenerateAnimatedTextures(directory)"));
 
             return outputStream;
+        }
+
+        /// <summary>
+        /// Renders full frames of <paramref name="sourceImage"/> from final
+        /// LivePortrait driving poses (63 floats each) without running the
+        /// motion extractor — the poses an avatar recorded per driving frame
+        /// (<c>motion.bin</c>), or any interpolation / offset of them. This is
+        /// the primitive behind expression blends and held peaks. Frames are
+        /// delivered in order on the main thread; the caller owns them.
+        /// Faults propagate to <paramref name="onError"/>; <paramref name="onComplete"/>
+        /// fires once after the last frame.
+        /// </summary>
+        public IEnumerator RenderPosesAsync(
+            Texture2D sourceImage,
+            IReadOnlyList<float[]> poses,
+            Action<int, Texture2D> onFrame,
+            Action onComplete = null,
+            Action<Exception> onError = null)
+        {
+            if (!_initialized)
+                throw new Exception("LiveTalkAPI not initialized. Call Initialize() first.");
+            if (sourceImage == null) throw new ArgumentNullException(nameof(sourceImage));
+            if (poses == null) throw new ArgumentNullException(nameof(poses));
+
+            bool failed = false;
+            yield return TaskYield.Guard(
+                _livePortrait.RenderPosesAsync(sourceImage, poses, onFrame),
+                ex => { failed = true; onError?.Invoke(ex); },
+                "LiveTalkAPI.RenderPoses");
+            if (!failed)
+                onComplete?.Invoke();
+        }
+
+        #endregion
+
+        #region Public Methods - Performances
+
+        /// <summary>
+        /// Renders a <see cref="Performance"/> — every utterance's audio, the
+        /// expression track resolved to a pose per tick (stored frames free;
+        /// blends and holds rendered from the avatars' poses), lip-sync over
+        /// each spoken slice — into the cache once, keyed on the
+        /// performance's fingerprint. A second call with the same cues,
+        /// characters and voices returns the rendered folder immediately.
+        /// Requires avatars built at <see cref="Avatar.Version"/> ≥ 2 (they
+        /// carry <c>motion.bin</c>).
+        /// </summary>
+        /// <param name="onProgress">Stage label and 0–1 progress.</param>
+        public IEnumerator RenderPerformanceAsync(
+            Performance performance,
+            Action<RenderedPerformance> onComplete,
+            Action<Exception> onError,
+            Action<string, float> onProgress = null)
+        {
+            if (!_initialized)
+                throw new Exception("LiveTalkAPI not initialized. Call Initialize() first.");
+            if (performance == null) throw new ArgumentNullException(nameof(performance));
+
+            yield return TaskYield.Guard(
+                PerformanceRenderer.RenderAsync(this, performance, onProgress, onComplete),
+                ex =>
+                {
+                    if (onError != null) onError(ex);
+                    else Logger.LogError("[LiveTalkAPI] RenderPerformance: " + ex.Message);
+                },
+                "LiveTalkAPI.RenderPerformance");
+        }
+
+        /// <summary>
+        /// True when <see cref="RenderPerformanceAsync"/> has already written a
+        /// complete folder for this performance (same cues, characters, voices).
+        /// A host can skip a bake-preview and go straight to
+        /// <see cref="CreatePerformancePlayer"/>.
+        /// </summary>
+        public bool IsPerformanceRendered(Performance performance)
+        {
+            if (performance == null) throw new ArgumentNullException(nameof(performance));
+            if (!LiveTalkCache.IsInitialized) return false;
+            string folder = PerformanceRenderer.FolderFor(performance.Fingerprint());
+            return File.Exists(Path.Combine(folder, PerformanceRenderer.ManifestFileName));
+        }
+
+        /// <summary>
+        /// A player for a rendered performance. The host owns the GameObject
+        /// (<c>Destroy</c> it when done); it is parented like
+        /// <see cref="CharacterPlayer"/>s.
+        /// </summary>
+        public PerformancePlayer CreatePerformancePlayer(RenderedPerformance performance, string name = null)
+        {
+            if (performance == null) throw new ArgumentNullException(nameof(performance));
+            var go = new GameObject(name ?? ("PerformancePlayer_" + performance.Fingerprint[..Math.Min(8, performance.Fingerprint.Length)]));
+            go.transform.SetParent(CharacterPlayer.ParentTransform, false);
+            var player = go.AddComponent<PerformancePlayer>();
+            player.Load(performance);
+            return player;
         }
 
         #endregion

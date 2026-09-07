@@ -35,6 +35,9 @@ UserSettings/
 __pycache__/
 *.pyc
 
+# Driving-clip intermediates (blends, PNG sequences, MB-Lab zip)
+Tools~/driving_clips/work/
+
 # Model weights are never committed
 *.onnx
 *.onnx.data

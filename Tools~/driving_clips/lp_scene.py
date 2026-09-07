@@ -5,16 +5,24 @@ camera / lights / backdrop / render settings every clip is rendered with.
 Import from a script run as ``Blender --background --python x.py`` after
 adding this folder to ``sys.path`` (see ``mblab_rich.py``).
 """
-import os, math
+import os, sys, math
 import bpy
 from mathutils import Vector, Euler
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+import driver_config  # noqa: E402
 
 BODY_NAME = "LP_body"
 ARM_NAME = "LP_armature"
 
-# The MB-Lab data folder of the installed addon (textures live here).
-MBLAB_TEX = os.path.expanduser(
-    "~/Library/Application Support/Blender/4.5/scripts/addons/MB-Lab/data/textures")
+
+def mblab_tex_dir():
+    """MB-Lab textures in this Blender's user addons folder."""
+    addons = bpy.utils.user_resource("SCRIPTS", path="addons")
+    return os.path.join(addons, "MB-Lab", "data", "textures")
+
 
 # Framing family shared by every clip: 85 mm, chin->crown = 85 % of a
 # 512x512 frame (face ~60 %), neutral grey backdrop, soft three-point.
@@ -28,16 +36,52 @@ BG_WORLD_STRENGTH = 0.35
 WORLD_HDR = "interior.exr"      # ships with Blender; soft indoor skylight
 WORLD_HDR_YAW_DEG = 35.0        # turn the HDR so its brighter side is the key side
 DOF_FSTOP = 4.0
+FILTER_SIZE = 1.8
+ENGINE = "EEVEE"
 # Saturated green: maximal separation from skin, hair and lips for the
 # extractor's landmark tracker, and no grey-on-grey with the shadow side.
-BG_PLANE = (0.05, 0.42, 0.12, 1.0)
-LOOK = 'AgX - High Contrast'
-# A/B overrides for the extractor-facing look (see README "Validating"):
-#   LP_BG=grey|green   LP_LIGHTS=hard|soft   LP_LOOK=<AgX look name>
-if os.environ.get("LP_BG") == "grey":
-    BG_PLANE = (0.36, 0.36, 0.37, 1.0)
-LIGHTS = os.environ.get("LP_LIGHTS", "hard")
-LOOK = os.environ.get("LP_LOOK", LOOK)
+BG_PLANE_GREEN = (0.05, 0.42, 0.12, 1.0)
+BG_PLANE_GREY = (0.36, 0.36, 0.37, 1.0)
+BG_PLANE = BG_PLANE_GREEN
+LOOK = "AgX - High Contrast"
+LIGHTS = "hard"
+
+
+def _apply_driver_config():
+    """Overlay ``build.py`` settings, then the LP_* env A/B knobs."""
+    global RES, FPS, FOCAL_MM, SENSOR_MM, HEAD_FRACTION, DOF_FSTOP
+    global FILTER_SIZE, ENGINE, WORLD_HDR, WORLD_HDR_YAW_DEG, BG_PLANE, LOOK, LIGHTS
+    scene = driver_config.load().get("scene") or {}
+    if "resolution" in scene:
+        RES = int(scene["resolution"])
+    if "fps" in scene:
+        FPS = int(scene["fps"])
+    if "focal_mm" in scene:
+        FOCAL_MM = float(scene["focal_mm"])
+    if "sensor_mm" in scene:
+        SENSOR_MM = float(scene["sensor_mm"])
+    if "head_fraction" in scene:
+        HEAD_FRACTION = float(scene["head_fraction"])
+    if "dof_fstop" in scene:
+        DOF_FSTOP = float(scene["dof_fstop"])
+    if "filter_size" in scene:
+        FILTER_SIZE = float(scene["filter_size"])
+    if "engine" in scene:
+        ENGINE = scene["engine"]
+    if "world_hdr" in scene:
+        WORLD_HDR = scene["world_hdr"]
+    if "world_hdr_yaw_deg" in scene:
+        WORLD_HDR_YAW_DEG = float(scene["world_hdr_yaw_deg"])
+    bg = scene.get("bg") or os.environ.get("LP_BG")
+    if bg == "grey":
+        BG_PLANE = BG_PLANE_GREY
+    elif bg == "green":
+        BG_PLANE = BG_PLANE_GREEN
+    LIGHTS = scene.get("lights") or os.environ.get("LP_LIGHTS", LIGHTS)
+    LOOK = scene.get("look") or os.environ.get("LP_LOOK", LOOK)
+
+
+_apply_driver_config()
 
 
 def open_character(path):
@@ -51,7 +95,7 @@ def repath_images():
     addons dir; point every missing FILE image at the installed copy."""
     for img in bpy.data.images:
         if not img.has_data and img.source == 'FILE':
-            cand = os.path.join(MBLAB_TEX, os.path.basename(img.filepath))
+            cand = os.path.join(mblab_tex_dir(), os.path.basename(img.filepath))
             if os.path.isfile(cand):
                 img.filepath = cand
                 img.reload()
@@ -197,11 +241,13 @@ def setup_backdrop(scn, hm):
     return plane
 
 
-def setup_render(scn, frame_start=0, frame_end=0, samples=48, engine="EEVEE"):
+def setup_render(scn, frame_start=0, frame_end=0, samples=48, engine=None):
     """`engine` is EEVEE (default — BLENDER_EEVEE_NEXT with shadows and
     ray-traced AO/contact shading; the extractor does not reward Cycles'
     extra realism and Eevee renders the seven clips in minutes) or CYCLES
     (random-walk SSS, physically shaded hair, HDR reflections; ~4x slower)."""
+    if engine is None:
+        engine = ENGINE
     if engine == "CYCLES":
         scn.render.engine = 'CYCLES'
         prefs = bpy.context.preferences.addons.get("cycles")
@@ -248,7 +294,7 @@ def setup_render(scn, frame_start=0, frame_end=0, samples=48, engine="EEVEE"):
     scn.render.image_settings.color_mode = 'RGB'
     scn.render.film_transparent = False
     scn.eevee.taa_render_samples = samples
-    scn.render.filter_size = 1.8      # softer pixel filter: thin strands alias less between frames
+    scn.render.filter_size = FILTER_SIZE  # softer pixel filter: thin strands alias less between frames
     scn.eevee.use_shadows = True
     # hair as strands, a few subdivisions so curved strands stay smooth
     scn.render.hair_type = 'STRAND'

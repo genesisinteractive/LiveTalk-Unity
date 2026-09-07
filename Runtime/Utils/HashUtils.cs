@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Text;
 using UnityEngine;
 
@@ -313,21 +314,26 @@ namespace LiveTalk.Utils
         }
 
         /// <summary>
-        /// Cache key for the lip-sync frames of one utterance:
-        /// <c>hash(voiceId, text, avatarId, expressionIndex)</c>. Frames depend
-        /// on the audio (voice + text), on the face (avatar) and on which
-        /// expression's driving frames they were rendered over — the same line
-        /// at expression 0 and expression 3 are different clips.
+        /// Cache key for the lip-sync frames of one chat utterance:
+        /// <c>hash(voiceId, text, avatarId, expressionIndex, audioContentHash)</c>.
+        /// Frames depend on the wav they were generated against, on the face,
+        /// and on which expression's driving frames they were rendered over.
+        /// A new take of the same line (same voice + text, different wav)
+        /// misses automatically — the host does not delete folders.
         /// </summary>
         /// <param name="voiceId">The <see cref="API.Voice.Id"/> speaking</param>
         /// <param name="text">The text to be spoken</param>
         /// <param name="avatarId">The <see cref="API.Avatar.Id"/> being animated</param>
         /// <param name="expressionIndex">Expression the frames were generated for</param>
-        /// <returns>Unique cache key, or null when any id or the text is empty</returns>
+        /// <param name="audioContentHash">
+        /// MD5 of the wav bytes (the take). Null or empty yields no key.
+        /// </param>
+        /// <returns>Unique cache key, or null when any input is empty</returns>
         public static string GenerateFramesCacheKey(
-            string voiceId, string text, string avatarId, int expressionIndex)
+            string voiceId, string text, string avatarId, int expressionIndex, string audioContentHash)
         {
-            if (string.IsNullOrEmpty(voiceId) || string.IsNullOrEmpty(text) || string.IsNullOrEmpty(avatarId))
+            if (string.IsNullOrEmpty(voiceId) || string.IsNullOrEmpty(text)
+                || string.IsNullOrEmpty(avatarId) || string.IsNullOrEmpty(audioContentHash))
                 return null;
 
             ulong combined = FNV_OFFSET_BASIS_64;
@@ -335,9 +341,68 @@ namespace LiveTalk.Utils
             combined = HashString(combined, voiceId);
             combined = HashString(combined, avatarId);
             combined = HashInt(combined, expressionIndex);
-            // Salt. v2: carries the avatar id and the expression index, which
-            // the v1 layout (speech key + "_frames") did not.
-            combined = HashString(combined, "frames_cache_v2");
+            combined = HashString(combined, audioContentHash);
+            // Salt. v3: the wav itself, so a re-rolled take does not replay
+            // mouths generated against the previous wav. v2 omitted it.
+            combined = HashString(combined, "frames_cache_v3");
+
+            string mainHash = combined.ToString("x16");
+            uint collisionResistance = (uint)(combined >> 32) ^ (uint)combined;
+            return mainHash + collisionResistance.ToString("x8");
+        }
+
+        /// <summary>
+        /// MD5 of a wav file on disk (the take). Used as the audio half of
+        /// lip-sync frame keys. Null when the path is missing.
+        /// </summary>
+        public static string GenerateAudioContentHash(string wavPath)
+        {
+            if (string.IsNullOrEmpty(wavPath) || !File.Exists(wavPath))
+                return null;
+            return GenerateAudioContentHash(File.ReadAllBytes(wavPath));
+        }
+
+        /// <summary>MD5 of encoded wav bytes (header + PCM).</summary>
+        public static string GenerateAudioContentHash(byte[] wavBytes)
+        {
+            if (wavBytes == null || wavBytes.Length == 0)
+                return null;
+
+            using (var md5 = System.Security.Cryptography.MD5.Create())
+            {
+                byte[] hashBytes = md5.ComputeHash(wavBytes);
+                var sb = new StringBuilder(32);
+                for (int i = 0; i < hashBytes.Length; i++)
+                    sb.Append(hashBytes[i].ToString("x2"));
+                return sb.ToString();
+            }
+        }
+
+        /// <summary>
+        /// Cache key for one performance lip-sync slice:
+        /// <c>hash(voiceId, text, avatarId, planSliceHash, audioContentHash)</c>.
+        /// Same words over the same sequence of base faces (and the same
+        /// wav) reuse the mouths; a re-rolled take or a re-timed expression
+        /// track misses. Distinct from <see cref="GenerateFramesCacheKey"/>
+        /// (chat utterances keyed on a single expression index).
+        /// </summary>
+        public static string GeneratePerformanceMouthKey(
+            string voiceId, string text, string avatarId, string planSliceHash, string audioContentHash)
+        {
+            if (string.IsNullOrEmpty(voiceId) || string.IsNullOrEmpty(text)
+                || string.IsNullOrEmpty(avatarId) || string.IsNullOrEmpty(planSliceHash)
+                || string.IsNullOrEmpty(audioContentHash))
+                return null;
+
+            ulong combined = FNV_OFFSET_BASIS_64;
+            combined = HashString(combined, GenerateTextHash(text));
+            combined = HashString(combined, voiceId);
+            combined = HashString(combined, avatarId);
+            combined = HashString(combined, planSliceHash);
+            combined = HashString(combined, audioContentHash);
+            // Salt. v2: wav content hash, not file length — two takes of the
+            // same duration are different mouths.
+            combined = HashString(combined, "perf_mouth_v2");
 
             string mainHash = combined.ToString("x16");
             uint collisionResistance = (uint)(combined >> 32) ^ (uint)combined;

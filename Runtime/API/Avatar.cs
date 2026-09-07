@@ -90,6 +90,17 @@ namespace LiveTalk.API
     {
         public AvatarData Data { get; set; } = new AvatarData();
         public string ExpressionName { get; set; }
+
+        /// <summary>
+        /// Per driving frame, the final 63-float LivePortrait driving keypoint
+        /// vector the frame was rendered from (<c>motion.bin</c>). Same length
+        /// and order as <see cref="Data"/>'s latents. Lets a frame be
+        /// re-rendered, blended with another, or held — see
+        /// <see cref="Core.LivePortraitInference.RenderPosesAsync"/>.
+        /// </summary>
+        public float[][] Poses { get; set; } = Array.Empty<float[]>();
+
+        public int FrameCount => Data?.Latents?.Count ?? 0;
     }
 
     /// <summary>
@@ -174,13 +185,17 @@ namespace LiveTalk.API
 
         internal const string ImageFileName = "image.png";
         internal const string DrivingFramesFolderName = "drivingFrames";
+        internal const string MotionFileName = "motion.bin";
+        internal const int PoseSize = 21 * 3;
         internal const float DefaultFrameRate = 25f;
 
         /// <summary>
-        /// Bumped when the driving-frame recipe or bundled clips change, so
-        /// existing folders rebuild instead of serving stale frames.
+        /// Bumped when the driving-frame recipe, bundled clips, or the
+        /// per-expression files change, so existing folders rebuild instead
+        /// of serving stale frames. v2: <c>motion.bin</c> (per-frame driving
+        /// poses) alongside the frames and latents.
         /// </summary>
-        internal const int Version = 1;
+        internal const int Version = 2;
 
         internal static readonly string[] AllExpressionNames =
             { "talk-neutral", "approve", "disapprove", "smile", "sad", "surprised", "confused" };
@@ -274,6 +289,11 @@ namespace LiveTalk.API
                     || !File.Exists(Path.Combine(expressionFolder, "faces.json")))
                 {
                     reason = $"expression-{i} has no latents.bin / faces.json";
+                    return false;
+                }
+                if (!File.Exists(Path.Combine(expressionFolder, MotionFileName)))
+                {
+                    reason = $"expression-{i} has no {MotionFileName}";
                     return false;
                 }
                 if (!Directory.EnumerateFiles(expressionFolder, "*.png").Any())
@@ -396,8 +416,10 @@ namespace LiveTalk.API
             videoPlayer.Prepare();
             yield return new WaitUntil(() => videoPlayer.isPrepared);
 
-            // Generate animated textures using LivePortrait
-            var outputStream = liveTalkAPI.GenerateAnimatedTexturesAsync(image, videoPlayer);
+            // Generate animated textures using LivePortrait, recording the
+            // driving pose each frame came from.
+            var poses = new List<float[]>();
+            var outputStream = liveTalkAPI.GenerateAnimatedTexturesAsync(image, videoPlayer, poses);
 
             // Process frames
             var processResult = new ProcessFramesResult();
@@ -422,6 +444,16 @@ namespace LiveTalk.API
             // expression folder without latents.bin / faces.json.
             yield return TaskYield.Wait(GenerateAndSaveCacheData(expressionFolder, processResult, liveTalkAPI),
                 $"Avatar.GenerateAndSaveCacheData {expression}");
+
+            int frameCount = processResult.GeneratedFrames.Count + processResult.GeneratedFramePaths.Count;
+            if (poses.Count != frameCount)
+            {
+                throw new InvalidOperationException(
+                    $"Expression '{expression}' produced {frameCount} frame(s) but {poses.Count} pose(s); " +
+                    "motion.bin would not line up with latents.bin.");
+            }
+            yield return TaskYield.Wait(SaveMotionToFile(expressionFolder, poses),
+                $"Avatar.SaveMotion {expression}");
 
             if (liveTalkAPI.Config.MemoryUsage == MemoryUsage.Optimal)
             {
@@ -572,6 +604,55 @@ namespace LiveTalk.API
             await File.WriteAllBytesAsync(latentsFile, latentsBytes);
 
             Logger.LogVerbose($"[Avatar] Saved {latents.Count} latent arrays ({totalFloats} total floats) to {latentsFile}");
+        }
+
+        /// <summary>
+        /// <c>motion.bin</c>: frames × 63 float32, little-endian, no header.
+        /// The frame count is the file length / (63 × 4) and must equal the
+        /// latent count.
+        /// </summary>
+        private static async Task SaveMotionToFile(string expressionFolder, List<float[]> poses)
+        {
+            var path = Path.Combine(expressionFolder, MotionFileName);
+            var all = new float[poses.Count * PoseSize];
+            for (int i = 0; i < poses.Count; i++)
+            {
+                var p = poses[i];
+                if (p == null || p.Length != PoseSize)
+                    throw new InvalidDataException($"Pose {i} has {p?.Length ?? 0} floats; expected {PoseSize}.");
+                Array.Copy(p, 0, all, i * PoseSize, PoseSize);
+            }
+            var bytes = new byte[all.Length * sizeof(float)];
+            Buffer.BlockCopy(all, 0, bytes, 0, bytes.Length);
+            await File.WriteAllBytesAsync(path, bytes);
+            Logger.LogVerbose($"[Avatar] Saved {poses.Count} poses to {path}");
+        }
+
+        private static async Task<float[][]> LoadMotionFromFile(string expressionFolder, int expectedFrames)
+        {
+            var path = Path.Combine(expressionFolder, MotionFileName);
+            if (!File.Exists(path))
+            {
+                throw new FileNotFoundException(
+                    $"Avatar expression has no {MotionFileName}: {path}. The avatar predates v{Version}; recreate it.",
+                    path);
+            }
+            var bytes = await File.ReadAllBytesAsync(path);
+            int stride = PoseSize * sizeof(float);
+            int n = bytes.Length / stride;
+            if (n * stride != bytes.Length || n != expectedFrames)
+            {
+                throw new InvalidDataException(
+                    $"{path} holds {n} pose(s) ({bytes.Length} bytes) but the expression has {expectedFrames} frame(s).");
+            }
+            var poses = new float[n][];
+            for (int i = 0; i < n; i++)
+            {
+                var p = new float[PoseSize];
+                Buffer.BlockCopy(bytes, i * stride, p, 0, stride);
+                poses[i] = p;
+            }
+            return poses;
         }
 
         /// <summary>
@@ -818,6 +899,21 @@ namespace LiveTalk.API
 
                     // Load face data
                     yield return LoadExpressionFaceData(expressionFolder, expressionData);
+
+                    // Poses (v2). A legacy folder without motion.bin still
+                    // loads for playback; pose rendering will refuse it.
+                    if (File.Exists(Path.Combine(expressionFolder, MotionFileName)))
+                    {
+                        float[][] poses = null;
+                        yield return TaskYield.Wait(
+                            LoadMotionFromFile(expressionFolder, expressionData.Data.Latents.Count),
+                            p => poses = p, $"Avatar.LoadMotion {folderName}");
+                        expressionData.Poses = poses;
+                    }
+                    else
+                    {
+                        Logger.LogWarning($"[Avatar] {folderName} has no {MotionFileName}; poses unavailable (pre-v{Version} folder).");
+                    }
 
                     LoadedExpressions[expressionIndex] = expressionData;
                     Logger.LogVerbose($"[Avatar] Loaded expression {expressionIndex} ({expressionData.ExpressionName}): {expressionData.Data.FaceRegions.Count} frames");

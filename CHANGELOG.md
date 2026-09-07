@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-09-07
+
+Scripted scenes are a first-class API: an expression track and a speech
+track on one 25 fps clock, rendered once into the cache and streamed
+from disk. Lip-sync frames now key on the wav content hash so a
+re-rolled take misses automatically. Existing avatar folders rebuild
+once (`Avatar.Version` 2). `CharacterPlayer` is unchanged.
+
+### Changed
+- **Chat and performance lip-sync frames key on the wav content hash**,
+  not only voice + text + face (`frames_cache_v3`, `perf_mouth_v2`).
+  A re-rolled take of the same line misses automatically; the host does
+  not delete folders. Voice-only (`expressionIndex: -1`) still does not
+  run MuseTalk. File length is not enough: two takes of the same
+  duration were a false hit. v2 / `perf_mouth_v1` folders are simply
+  never matched; clear the cache to reclaim the space.
+- **Performance lip-sync is cached per utterance slice**, not per
+  `perf_*` folder. Mouths key on voice + text + avatar + the hash of
+  the base-face sequence under the line (stored expression/frame or
+  pose-cache key, in order) and the wav content hash. A new fingerprint
+  that only moves cues still on the same faces reuses those mouths;
+  MuseTalk runs only for slices whose plan actually changed. Chat
+  (`CharacterPlayer`) keys on expression index plus the same wav hash.
+  Incomplete folders are not a hit.
+
+### Added
+- **`Character.SpeakAsync(..., useCache:)`** (default true) and
+  **`CharacterPlayer.QueueSpeech(..., useCache:)`**. False skips the
+  audio cache *read* for that call so the same voice + text synthesises
+  a new take, then overwrites that wav. Frames for that take miss on
+  the next animated speak because they hash the wav. `expressionIndex:
+  -1` never runs MuseTalk. Independent of
+  `LiveTalkAPI.SetCacheEnabled`, which is a global on/off.
+- **`LiveTalkAPI.IsPerformanceRendered`** — whether a performance's
+  cache folder is already complete, so a host can preview audio on the
+  first bake and skip that pass on replay.
+  `Performance` holds `ExpressionCue`s (an expression the face performs:
+  play the clip through, or play to its peak and hold it with the idle
+  clip's own micro-motion, eyes at 1.0 so blinks stay real) and
+  `Utterance`s (a line by any character, lip-synced or audio-only),
+  each placed by an `Anchor` — absolute seconds, or relative to another
+  cue's start or end, so a reaction can be authored against a line whose
+  length is only known once its audio exists, and lines can overlap
+  (an interruption). `LiveTalkAPI.RenderPerformanceAsync` renders it
+  once into the cache: audio per utterance (cached on voice + text), the
+  track resolved to a pose per tick, then lip-sync per utterance over the
+  base frames the track has at those ticks; `PerformancePlayer` streams
+  the result — frames per animated character, wavs, captions — from disk
+  a little ahead of the play head. `CharacterPlayer` is unchanged and
+  remains the right tool for a chat where the next line is not known.
+- **`LiveTalkAPI.RenderPosesAsync`** — full frames from final LivePortrait
+  driving poses (63 floats), no motion extractor. The primitive behind
+  blends and holds; also usable on its own.
+- **Avatar v2 records the driving pose per frame** (`motion.bin` per
+  expression; `Avatar.Version` 2). Existing avatar folders rebuild once.
+  A blend is a `lerp` between two authored poses; a hold is the peak pose
+  plus the idle clip's delta from its rest. No gain, no scale pin — this
+  is not the 2.1 motion editing.
+- **`Tools~/driving_clips/build.py`** — one command to generate
+  `Resources/driving/*.mp4` from scratch. Look, character, framing and
+  encode knobs live in the SETTINGS block at the top of that file;
+  `python3 build.py` installs MB-Lab, dresses the character, renders and
+  encodes. See `Tools~/driving_clips/README.md`.
+
 ## [2.2.0] - 2026-09-05
 
 LivePortrait crops are upright (they were rotated ~40°), the bundled driving clips are new authored 25 fps rest-to-rest footage, idle loops forward, and speech continues from the idle frame. Existing avatar folders rebuild once.

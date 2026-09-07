@@ -49,14 +49,28 @@ namespace LiveTalk.Utils
             if (clip == null)
                 throw new ArgumentNullException(nameof(clip));
 
-            var samples = new float[clip.samples * clip.channels];
-            clip.GetData(samples, 0);
-            byte[] bytes = WavCodec.Encode(QwenAudio.ToMono(samples, clip.channels), clip.frequency);
-
+            byte[] bytes = EncodeWav(clip);
             string directory = Path.GetDirectoryName(path);
             if (!string.IsNullOrEmpty(directory))
                 Directory.CreateDirectory(directory);
             await Task.Run(() => File.WriteAllBytes(path, bytes));
+        }
+
+        /// <summary>
+        /// Identity of a take: MD5 of the 16-bit mono wav this clip encodes
+        /// to, the same bytes <see cref="SaveClipAsync"/> would write.
+        /// </summary>
+        public static string ContentHash(AudioClip clip)
+        {
+            if (clip == null) return null;
+            return HashUtils.GenerateAudioContentHash(EncodeWav(clip));
+        }
+
+        static byte[] EncodeWav(AudioClip clip)
+        {
+            var samples = new float[clip.samples * clip.channels];
+            clip.GetData(samples, 0);
+            return WavCodec.Encode(QwenAudio.ToMono(samples, clip.channels), clip.frequency);
         }
     }
 }

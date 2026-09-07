@@ -19,6 +19,7 @@ from mathutils import noise, Vector
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lp_scene as S            # noqa: E402
 import clips as CLIPDEF         # noqa: E402
+import driver_config            # noqa: E402
 
 argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 ap = argparse.ArgumentParser()
@@ -314,8 +315,12 @@ def apply(body, arm, frames):
 
 # ---------------------------------------------------------------- main
 scn, body, arm = S.open_character(args.blend)
-if args.samples:
-    scn.eevee.taa_render_samples = args.samples
+scene_cfg = driver_config.load().get("scene") or {}
+samples = args.samples or int(scene_cfg.get("render_samples") or 0)
+S.setup_render(
+    scn, 0, 0,
+    samples=samples or scn.eevee.taa_render_samples,
+    engine=scene_cfg.get("engine") or S.ENGINE)
 os.makedirs(args.frames, exist_ok=True)
 summary = []
 for name in [c for c in args.clips.split(",") if c]:
