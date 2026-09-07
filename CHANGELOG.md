@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-09-07
+
+Scripted scenes are a first-class API: an expression track and a speech
+track on one 25 fps clock, rendered once into the cache and streamed
+from disk. Lip-sync frames now key on the wav content hash so a
+re-rolled take misses automatically. Existing avatar folders rebuild
+once (`Avatar.Version` 2). `CharacterPlayer` is unchanged.
+
 ### Changed
 - **Chat and performance lip-sync frames key on the wav content hash**,
   not only voice + text + face (`frames_cache_v3`, `perf_mouth_v2`).
