@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-09-19
+
+Hosts can pull an expression's frames for a duration without reaching
+into internal idle folders. The package now lives at
+[genesisinteractive/LiveTalk-Unity](https://github.com/genesisinteractive/LiveTalk-Unity);
+the previous GitHub URL redirects.
+
 ### Added
 - **`LiveTalkAPI.RenderExpressionAsync(character, expression, seconds, …)`**
   — the frames of one of an avatar's expressions, in playback order, for
@@ -22,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`motion.bin`, avatars at `Avatar.Version` ≥ 2) into the cache.
   Hosts wanting an idle clip no longer have to reach for
   `Character.IdleFramesFolder`, which stays internal.
+
+### Changed
+- Repository and install URLs point at
+  `https://github.com/genesisinteractive/LiveTalk-Unity`.
+- Declared `com.genesis.qwentts.unity` dependency is 0.1.1.
 
 ## [2.3.0] - 2026-09-07
 

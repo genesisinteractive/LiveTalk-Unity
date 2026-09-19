@@ -1,6 +1,6 @@
 {
   "name": "com.genesis.livetalk.unity",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "displayName": "LiveTalk Unity",
   "description": "On-device talking-head characters for Unity: LivePortrait facial animation, MuseTalk lip-sync and Qwen3-TTS speech through ONNX Runtime. Build an avatar from a portrait, design or clone a voice, compose them into a character and have it speak.",
   "unity": "6000.0",
@@ -14,7 +14,7 @@
   "changelogUrl": "https://github.com/genesisinteractive/LiveTalk-Unity/blob/main/CHANGELOG.md",
   "licensesUrl": "https://github.com/genesisinteractive/LiveTalk-Unity/blob/main/LICENSE",
   "dependencies": {
-    "com.genesis.qwentts.unity": "0.1.0",
+    "com.genesis.qwentts.unity": "0.1.1",
     "com.github.asus4.onnxruntime": "0.4.0",
     "com.unity.nuget.newtonsoft-json": "3.2.1",
     "com.unity.ugui": "2.0.0"
