@@ -8,11 +8,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/arghyasur1991/LiveTalk-Unity.git"
+    "url": "https://github.com/genesisinteractive/LiveTalk-Unity.git"
   },
-  "documentationUrl": "https://github.com/arghyasur1991/LiveTalk-Unity#readme",
-  "changelogUrl": "https://github.com/arghyasur1991/LiveTalk-Unity/blob/main/CHANGELOG.md",
-  "licensesUrl": "https://github.com/arghyasur1991/LiveTalk-Unity/blob/main/LICENSE",
+  "documentationUrl": "https://github.com/genesisinteractive/LiveTalk-Unity#readme",
+  "changelogUrl": "https://github.com/genesisinteractive/LiveTalk-Unity/blob/main/CHANGELOG.md",
+  "licensesUrl": "https://github.com/genesisinteractive/LiveTalk-Unity/blob/main/LICENSE",
   "dependencies": {
     "com.genesis.qwentts.unity": "0.1.0",
     "com.github.asus4.onnxruntime": "0.4.0",
