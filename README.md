@@ -10,7 +10,7 @@ LiveTalk combines three models behind one API:
 |---|---|---|
 | **LivePortrait** | Animates a still portrait with expressions and head motion | [KwaiVGI/LivePortrait](https://github.com/KwaiVGI/LivePortrait) |
 | **MuseTalk** | Lip-syncs those frames to audio in real time | [TMElyralab/MuseTalk](https://github.com/TMElyralab/MuseTalk) |
-| **Qwen3-TTS** | Designs a speaker from a description, or clones one from a recording, and speaks | [Qwen3-TTS-Unity](https://github.com/arghyasur1991/Qwen3-TTS-Unity) |
+| **Qwen3-TTS** | Designs a speaker from a description, or clones one from a recording, and speaks | [Qwen3-TTS-Unity](https://github.com/genesisinteractive/Qwen3-TTS-Unity) |
 
 The PyTorch models of the first two were exported to ONNX and tuned for CoreML;
 the third is a separate package this one depends on. 2.0 changed the voice
@@ -94,13 +94,13 @@ Package Manager UI):
    resolve a dependency from a git URL by itself, so add it first:
 
    ```json
-   "com.genesis.qwentts.unity": "https://github.com/arghyasur1991/Qwen3-TTS-Unity.git"
+   "com.genesis.qwentts.unity": "https://github.com/genesisinteractive/Qwen3-TTS-Unity.git"
    ```
 
 3. **This package**:
 
    ```json
-   "com.genesis.livetalk.unity": "https://github.com/arghyasur1991/LiveTalk-Unity.git"
+   "com.genesis.livetalk.unity": "https://github.com/genesisinteractive/LiveTalk-Unity.git"
    ```
 
 `com.github.asus4.onnxruntime`, `com.unity.nuget.newtonsoft-json` and
@@ -153,7 +153,7 @@ Point LiveTalk at the folder that contains both via `Initialize(ttsModelRoot:)`.
 Left null, the TTS package looks in `StreamingAssets/QwenTTS`, which is fine in
 the editor and usually wrong for a shipped player (StreamingAssets ships with
 the build). **Window → Qwen3 TTS → Model Status** shows what was found. Read the
-[Qwen3-TTS-Unity README](https://github.com/arghyasur1991/Qwen3-TTS-Unity#readme)
+[Qwen3-TTS-Unity README](https://github.com/genesisinteractive/Qwen3-TTS-Unity#readme)
 for the memory budget, reference-clip rules (≥ 4 s, 24 kHz, ≤ 20 s used) and
 int8 precision.
 
@@ -725,7 +725,7 @@ It builds on, and its model exports derive from:
 
 - [LivePortrait](https://github.com/KwaiVGI/LivePortrait) — MIT License
 - [MuseTalk](https://github.com/TMElyralab/MuseTalk) — MIT License
-- [Qwen3-TTS-Unity](https://github.com/arghyasur1991/Qwen3-TTS-Unity) — Apache License 2.0.
+- [Qwen3-TTS-Unity](https://github.com/genesisinteractive/Qwen3-TTS-Unity) — Apache License 2.0.
   The Qwen3-TTS weights are Alibaba's, released under Apache-2.0 and not part
   of either package; check the model cards before shipping:
   [Qwen3-TTS-12Hz-1.7B-VoiceDesign](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign),

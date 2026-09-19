@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-09-19
+
+Hosts can pull an expression's frames for a duration without reaching
+into internal idle folders. The package now lives at
+[genesisinteractive/LiveTalk-Unity](https://github.com/genesisinteractive/LiveTalk-Unity);
+the previous GitHub URL redirects.
+
+### Added
+- **`LiveTalkAPI.RenderExpressionAsync(character, expression, seconds, …)`**
+  — the frames of one of an avatar's expressions, in playback order, for
+  a given duration, cycling if the duration outlasts the expression.
+  A negative duration means the expression's own length: exactly one
+  cycle of its driving clip, which is the duration to ask for when the
+  result has to loop, since the clips close on themselves and any other
+  length cuts mid-motion. Normally nothing is inferred — an avatar
+  renders every expression when it is built, so this resolves to those
+  stored PNGs (the same files `CharacterPlayer` plays as its idle loop
+  and a performance serves for stored ticks) and returns their paths.
+  Absent frames are re-rendered from the expression's recorded poses
+  (`motion.bin`, avatars at `Avatar.Version` ≥ 2) into the cache.
+  Hosts wanting an idle clip no longer have to reach for
+  `Character.IdleFramesFolder`, which stays internal.
+
+### Changed
+- Repository and install URLs point at
+  `https://github.com/genesisinteractive/LiveTalk-Unity`.
+- Declared `com.genesis.qwentts.unity` dependency is 0.1.1.
+
 ## [2.3.0] - 2026-09-07
 
 Scripted scenes are a first-class API: an expression track and a speech

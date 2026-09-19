@@ -860,6 +860,142 @@ namespace LiveTalk.API
                 onComplete?.Invoke();
         }
 
+        /// <summary>
+        /// The frames of one of an avatar's expressions, in playback order,
+        /// covering <paramref name="seconds"/> of playback at
+        /// <see cref="Character.IdleFrameRate"/>. Frames cycle if the duration
+        /// outlasts the expression.
+        /// <para>
+        /// Pass a negative <paramref name="seconds"/> for the expression's own
+        /// length — exactly one cycle of its driving clip. That is the
+        /// duration to ask for when the result has to **loop**: the clips are
+        /// authored to close on themselves, so one whole cycle is seamless
+        /// while any other length cuts mid-motion.
+        /// </para>
+        /// <para>
+        /// Normally nothing is inferred. An avatar renders every expression
+        /// when it is built, so this resolves to those stored PNGs and hands
+        /// back their paths — the same files
+        /// <see cref="CharacterPlayer"/> plays as its idle loop and a
+        /// performance serves for stored ticks. Frames that are missing are
+        /// re-rendered from the expression's recorded poses
+        /// (<c>motion.bin</c>, avatars at <see cref="Avatar.Version"/> ≥ 2)
+        /// into the cache, which is why this is async at all.
+        /// </para>
+        /// </summary>
+        /// <param name="character">Owner of the avatar. Must be animatable.</param>
+        /// <param name="expression">Index from <see cref="Avatar.ExpressionIndices"/>. 0 is idle.</param>
+        /// <param name="seconds">Playback length; negative for one whole cycle.</param>
+        /// <param name="onComplete">Frame paths in order, one per tick.</param>
+        /// <param name="onError">Receives validation and render faults.</param>
+        public IEnumerator RenderExpressionAsync(
+            Character character,
+            int expression,
+            float seconds,
+            Action<string[]> onComplete,
+            Action<Exception> onError = null)
+        {
+            if (!_initialized)
+                throw new Exception("LiveTalkAPI not initialized. Call Initialize() first.");
+
+            if (character == null)
+            {
+                onError?.Invoke(new ArgumentNullException(nameof(character)));
+                yield break;
+            }
+            var avatar = character.Avatar;
+            if (avatar == null || !avatar.CanAnimate)
+            {
+                onError?.Invoke(new InvalidOperationException(
+                    $"Character '{character.Name}' has no animatable avatar."));
+                yield break;
+            }
+            if (!avatar.LoadedExpressions.TryGetValue(expression, out var data)
+                || data == null || data.FrameCount <= 0)
+            {
+                onError?.Invoke(new ArgumentOutOfRangeException(
+                    nameof(expression),
+                    $"Avatar {avatar.Id} has no expression {expression} "
+                    + $"({Avatar.GetExpressionName(expression)}). Available: "
+                    + string.Join(", ", avatar.ExpressionIndices)));
+                yield break;
+            }
+
+            int cycle = data.FrameCount;
+            int ticks = seconds < 0f
+                ? cycle
+                : Mathf.Max(1, Mathf.RoundToInt(seconds * Avatar.DefaultFrameRate));
+            string expressionFolder = avatar.ExpressionFolder(expression);
+
+            var paths = new string[ticks];
+            var missing = new List<int>();
+            var missingSeen = new HashSet<int>();
+            for (int tick = 0; tick < ticks; tick++)
+            {
+                int frame = tick % cycle;
+                paths[tick] = Path.Combine(expressionFolder, $"{frame:D5}.png");
+                if (!File.Exists(paths[tick]) && missingSeen.Add(frame))
+                    missing.Add(frame);
+            }
+
+            if (missing.Count == 0)
+            {
+                Logger.Log($"[LiveTalkAPI] RenderExpression {avatar.Id} expression {expression}: "
+                    + $"{ticks} tick(s) from stored frames, {cycle}-frame cycle"
+                    + (seconds < 0f ? " (one whole loop)" : "") + ".");
+                onComplete?.Invoke(paths);
+                yield break;
+            }
+
+            if (data.Poses == null || data.Poses.Length < cycle)
+            {
+                onError?.Invoke(new InvalidOperationException(
+                    $"Avatar {avatar.Id} expression {expression} is missing {missing.Count} "
+                    + $"frame(s) and has no poses to re-render them from. The folder predates "
+                    + $"v{Avatar.Version}; recreate the avatar."));
+                yield break;
+            }
+
+            Logger.LogWarning($"[LiveTalkAPI] RenderExpression {avatar.Id} expression {expression}: "
+                + $"{missing.Count} stored frame(s) absent; re-rendering them from motion.bin.");
+
+            var poses = new List<float[]>(missing.Count);
+            var rendered = new Dictionary<int, string>(missing.Count);
+            for (int i = 0; i < missing.Count; i++)
+            {
+                int frame = missing[i];
+                poses.Add(data.Poses[frame]);
+                rendered[frame] = LiveTalkCache.GetFilePath(
+                    $"{ExpressionFramePrefix}{avatar.Id}_{expression}_{frame:D5}", ".png");
+            }
+
+            Exception renderFail = null;
+            yield return RenderPosesAsync(
+                avatar.Image, poses,
+                onFrame: (i, tex) =>
+                {
+                    File.WriteAllBytes(rendered[missing[i]], tex.EncodeToPNG());
+                    if (tex != null) UnityEngine.Object.Destroy(tex);
+                },
+                onError: ex => renderFail = ex);
+
+            if (renderFail != null)
+            {
+                onError?.Invoke(renderFail);
+                yield break;
+            }
+
+            for (int tick = 0; tick < ticks; tick++)
+            {
+                int frame = tick % cycle;
+                if (rendered.TryGetValue(frame, out var png))
+                    paths[tick] = png;
+            }
+            onComplete?.Invoke(paths);
+        }
+
+        const string ExpressionFramePrefix = "expr_";
+
         #endregion
 
         #region Public Methods - Performances
