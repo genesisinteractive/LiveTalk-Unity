@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `LiveTalkAPI.PoseRecipe`: identifies how blends and held peaks are made,
+  next to `LipSyncRecipe`. It salts `Performance.Fingerprint()`, so a
+  rendered performance re-renders when that recipe changes; hosts that keep
+  their own renders can key on it too.
+
+### Fixed
+- **Held expressions no longer roll the eyes.** A hold at an expression's
+  peak mixed in the idle clip's motion with the eye keypoints at full
+  strength and the rest of the face at the micro-motion gain, so the eyes
+  took the idle's head sway on their own and slid across the face (up to
+  the eye's full width). The idle motion is now split into a rigid head
+  sway, applied to the whole face at the micro gain, and what is left
+  (blinks), applied to the eyes at full strength.
+
 ## [2.5.0] - 2026-10-04
 
 Sharper, steadier lip-sync; avatar creation that keeps going with the editor

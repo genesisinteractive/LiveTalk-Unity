@@ -485,6 +485,13 @@ namespace LiveTalk.API
         public static string LipSyncRecipe => HashUtils.LipSyncRecipe;
 
         /// <summary>
+        /// Identifies how in-between poses (expression blends, held peaks) are
+        /// made. Like <see cref="LipSyncRecipe"/>, a host that keeps its own
+        /// renders can key them on it.
+        /// </summary>
+        public static string PoseRecipe => HashUtils.PoseRecipe;
+
+        /// <summary>
         /// Gets whether caching is enabled.
         /// </summary>
         public static bool IsCacheEnabled => LiveTalkCache.IsEnabled;

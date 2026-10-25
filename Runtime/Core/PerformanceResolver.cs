@@ -330,21 +330,89 @@ namespace LiveTalk.Core
             return o;
         }
 
-        /// <summary>peak + gain·(idle − idleRest), eye keypoints at gain 1.</summary>
+        /// <summary>
+        /// A held peak that still lives: the idle's motion away from its rest, split into a
+        /// rigid head sway (best-fit rotation + shift of the face keypoints, eyes excluded)
+        /// and what is left (blinks, small face motion). The sway moves the whole peak face
+        /// rigidly, scaled by <paramref name="micro"/>; the leftover is added at
+        /// <paramref name="micro"/>, eye keypoints at 1 so blinks are real blinks.
+        /// Adding the raw idle delta instead (eyes at 1, face at micro) gave the eyes the
+        /// idle's head sway the face did not get: they slid off the face (median 26 %,
+        /// worst 119 % of the eye's span on a 7.5° sway), the "rolling eyes" in holds.
+        /// Now the eyes move exactly as the idle's own eyes do against its face.
+        /// </summary>
         internal static float[] HoldPose(float[] peak, float[] idle, float[] idleRest, float micro)
         {
-            var o = new float[peak.Length];
             micro = Mathf.Clamp01(micro);
-            for (int kp = 0; kp < peak.Length / 3; kp++)
+            int n = peak.Length / 3;
+            Vector3 P(float[] a, int i) => new Vector3(a[i * 3], a[i * 3 + 1], a[i * 3 + 2]);
+
+            // Centroids of the face keypoints (eyes excluded: they blink).
+            Vector3 cR = Vector3.zero, cI = Vector3.zero, cP = Vector3.zero;
+            int m = 0;
+            for (int i = 0; i < n; i++)
             {
-                float g = Array.IndexOf(EyeKeypoints, kp) >= 0 ? 1f : micro;
-                for (int d = 0; d < 3; d++)
-                {
-                    int i = kp * 3 + d;
-                    o[i] = peak[i] + g * (idle[i] - idleRest[i]);
-                }
+                if (Array.IndexOf(EyeKeypoints, i) >= 0) continue;
+                cR += P(idleRest, i); cI += P(idle, i); cP += P(peak, i); m++;
+            }
+            cR /= m; cI /= m; cP /= m;
+
+            // Best-fit rotation rest → idle (Horn's quaternion method).
+            Quaternion q = FitRotation(idleRest, idle, cR, cI, n);
+            Quaternion qm = Quaternion.Slerp(Quaternion.identity, q, micro);
+            Vector3 shift = micro * (cI - cR);
+
+            var o = new float[peak.Length];
+            for (int i = 0; i < n; i++)
+            {
+                Vector3 rigidIdle = q * (P(idleRest, i) - cR) + cI;
+                Vector3 residual = P(idle, i) - rigidIdle;
+                float g = Array.IndexOf(EyeKeypoints, i) >= 0 ? 1f : micro;
+                Vector3 v = qm * (P(peak, i) - cP) + cP + shift + g * residual;
+                o[i * 3] = v.x; o[i * 3 + 1] = v.y; o[i * 3 + 2] = v.z;
             }
             return o;
+        }
+
+        /// <summary>Rotation q minimising Σ|q·(a_i − ca) − (b_i − cb)|² over the face keypoints.</summary>
+        static Quaternion FitRotation(float[] a, float[] b, Vector3 ca, Vector3 cb, int n)
+        {
+            double sxx = 0, sxy = 0, sxz = 0, syx = 0, syy = 0, syz = 0, szx = 0, szy = 0, szz = 0;
+            for (int i = 0; i < n; i++)
+            {
+                if (Array.IndexOf(EyeKeypoints, i) >= 0) continue;
+                double ax = a[i * 3] - ca.x, ay = a[i * 3 + 1] - ca.y, az = a[i * 3 + 2] - ca.z;
+                double bx = b[i * 3] - cb.x, by = b[i * 3 + 1] - cb.y, bz = b[i * 3 + 2] - cb.z;
+                sxx += ax * bx; sxy += ax * by; sxz += ax * bz;
+                syx += ay * bx; syy += ay * by; syz += ay * bz;
+                szx += az * bx; szy += az * by; szz += az * bz;
+            }
+            var N = new double[4, 4]
+            {
+                { sxx + syy + szz, syz - szy, szx - sxz, sxy - syx },
+                { syz - szy, sxx - syy - szz, sxy + syx, szx + sxz },
+                { szx - sxz, sxy + syx, -sxx + syy - szz, syz + szy },
+                { sxy - syx, szx + sxz, syz + szy, -sxx - syy + szz },
+            };
+            // Largest eigenvector by power iteration on N + shift·I (shift makes it positive definite).
+            double shiftI = 0;
+            for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++) shiftI += Math.Abs(N[r, c]);
+            var v = new double[] { 1, 0, 0, 0 };
+            for (int it = 0; it < 200; it++)
+            {
+                var w = new double[4];
+                for (int r = 0; r < 4; r++)
+                {
+                    double acc = shiftI * v[r];
+                    for (int c = 0; c < 4; c++) acc += N[r, c] * v[c];
+                    w[r] = acc;
+                }
+                double len = Math.Sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2] + w[3] * w[3]);
+                if (len < 1e-20) return Quaternion.identity;
+                for (int r = 0; r < 4; r++) v[r] = w[r] / len;
+            }
+            if (v[0] < 0) for (int r = 0; r < 4; r++) v[r] = -v[r]; // shortest arc
+            return new Quaternion((float)v[1], (float)v[2], (float)v[3], (float)v[0]);
         }
 
         /// <summary>Stable key for a rendered pose: 4-decimal quantised floats hashed with the avatar id.</summary>
