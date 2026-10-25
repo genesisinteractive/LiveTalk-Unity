@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-10-25
+
+Held expressions keep the eyes on the face: a hold at an expression's peak no
+longer rolls or tilts the eyes as the idle's head sway plays under it.
+
 ### Added
 - `LiveTalkAPI.PoseRecipe`: identifies how blends and held peaks are made,
   next to `LipSyncRecipe`. It salts `Performance.Fingerprint()`, so a
