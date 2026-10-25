@@ -526,7 +526,8 @@ on one clock:
 
 - an **expression track**: what the face does over time, regardless of speech —
   play an expression clip through, or play to its peak and *hold* it with the
-  idle clip's own micro-motion; blend into the next; react while someone else
+  idle clip's own micro-motion (its head sway, scaled by `Micro01`, moves the
+  whole face; its blinks land in full); blend into the next; react while someone else
   is talking;
 - a **speech track**: timed utterances by any character, lip-synced onto
   *whatever the expression track has at that tick*, overlapping across
@@ -643,8 +644,9 @@ two expressions never shares frames. Lip-sync frames also hash the wav
 bytes: a re-rolled take misses mouths generated against the previous wav.
 Lip-sync frames and rendered performances are also keyed on
 `LiveTalkAPI.LipSyncRecipe`, which changes whenever the way frames are made
-changes; older folders are simply never matched. Key your own exported
-renders on it too if you keep them.
+changes, and rendered performances on `LiveTalkAPI.PoseRecipe`, which changes
+whenever the way blends and holds are made changes; older folders are simply
+never matched. Key your own exported renders on both if you keep them.
 A frames folder left short by a failed run is deleted rather than taken as
 a hit next time. `SpeakAsync(..., useCache: false)` and
 `QueueSpeech(..., useCache: false)` skip the audio read for that call only

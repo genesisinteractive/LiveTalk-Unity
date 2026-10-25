@@ -22,6 +22,13 @@ namespace LiveTalk.Utils
         /// </summary>
         internal const string LipSyncRecipe = "refine-1";
 
+        /// <summary>
+        /// How poses that are not stored frames are made (blends, held peaks).
+        /// Salts every rendered performance, so a change re-renders it. Pose
+        /// frames themselves key on the pose values and need no salt.
+        /// </summary>
+        internal const string PoseRecipe = "hold-rigid-1";
+
         // FNV-1a constants for 64-bit hashing
         private const ulong FNV_OFFSET_BASIS_64 = 14695981039346656037UL;
         private const ulong FNV_PRIME_64 = 1099511628211UL;

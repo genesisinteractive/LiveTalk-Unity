@@ -255,7 +255,7 @@ namespace LiveTalk.API
         public string Fingerprint()
         {
             var sb = new System.Text.StringBuilder();
-            sb.Append("perf_v1;").Append(Utils.HashUtils.LipSyncRecipe).Append(";gap=").Append(DefaultGap.ToString("R")).Append(";tail=").Append(Tail.ToString("R")).Append(';');
+            sb.Append("perf_v1;").Append(Utils.HashUtils.LipSyncRecipe).Append(';').Append(Utils.HashUtils.PoseRecipe).Append(";gap=").Append(DefaultGap.ToString("R")).Append(";tail=").Append(Tail.ToString("R")).Append(';');
             foreach (var u in Utterances)
                 sb.Append("U|").Append(u.Id.Value).Append('|').Append(u.Character?.Id).Append('|')
                   .Append(u.Character?.Voice?.Id).Append('|').Append(u.Character?.Avatar?.Id).Append('|')
